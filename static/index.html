@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExamScan</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #111;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            gap: 16px;
+            font-family: sans-serif;
+        }
+
+        #viewer { position: relative; max-width: 100%; }
+
+        img {
+            max-width: 100%;
+            max-height: calc(100vh - 100px);
+            display: block;
+            border: 2px solid #333;
+            background: #000;
+        }
+
+        #flash {
+            position: absolute;
+            inset: 0;
+            background: white;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.05s ease-in;
+        }
+
+        #flash.go { opacity: 1; }
+
+        #controls { display: flex; align-items: center; gap: 16px; }
+
+        button {
+            padding: 12px 40px;
+            font-size: 18px;
+            background: #e63946;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        button:hover { background: #c1121f; }
+        button:disabled { background: #555; cursor: default; }
+
+        #status { color: #aaa; font-size: 14px; min-width: 200px; }
+        #counter { color: #4cc9f0; font-size: 14px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="viewer">
+        <img id="feed" alt="Camera feed" />
+        <div id="flash"></div>
+    </div>
+    <div id="controls">
+        <button id="btn" onclick="capture()">Capture</button>
+        <div>
+            <div id="status">Ready</div>
+            <div id="counter">0 photos taken</div>
+        </div>
+    </div>
+    <script>
+        let capturing = false;
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") capture();
+        });
+
+        function startStream() {
+            const img = document.getElementById("feed");
+            img.src = "/stream?" + Date.now();
+            img.onerror = () => {
+                if (!capturing) setTimeout(startStream, 1000);
+            };
+        }
+
+        function flash() {
+            const f = document.getElementById("flash");
+            f.classList.add("go");
+            setTimeout(() => {
+                f.style.transition = "opacity 0.4s ease-out";
+                f.classList.remove("go");
+                setTimeout(() => { f.style.transition = "opacity 0.05s ease-in"; }, 400);
+            }, 80);
+        }
+
+        function capture() {
+            if (capturing) return;
+            capturing = true;
+
+            const btn = document.getElementById("btn");
+            const status = document.getElementById("status");
+            const counter = document.getElementById("counter");
+            const img = document.getElementById("feed");
+
+            btn.disabled = true;
+            btn.textContent = "Capturing...";
+            status.textContent = "Capturing...";
+            flash();
+            img.src = "";
+
+            fetch("/capture")
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        status.textContent = "Error: " + data.error;
+                    } else {
+                        status.textContent = "Saved: " + data.filename;
+                        counter.textContent = data.count + " photo" + (data.count !== 1 ? "s" : "") + " taken";
+                    }
+                    btn.textContent = "Capture";
+                    btn.disabled = false;
+                    capturing = false;
+                    setTimeout(startStream, 800);
+                })
+                .catch(e => {
+                    status.textContent = "Error: " + e;
+                    btn.textContent = "Capture";
+                    btn.disabled = false;
+                    capturing = false;
+                    setTimeout(startStream, 1500);
+                });
+        }
+
+        window.onload = startStream;
+    </script>
+</body>
+</html>

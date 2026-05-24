@@ -1,0 +1,11 @@
+[project]
+name = "examscan"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "picamera2>=0.3.36",
+    "rpi-lgpio>=0.6",
+    "rpimotorlib>=4.0.0",
+]
