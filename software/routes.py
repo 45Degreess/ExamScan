@@ -22,7 +22,6 @@ from processing import (
     scan_half,
     _ocr_handwriting,
     _ocr_printed,
-    _ocr_trocr,
 )
 
 router = APIRouter()
@@ -61,7 +60,7 @@ async def scan_document(
     warped = four_point_transform(image, corners.reshape(4, 2))
     warped = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
 
-    result = enhance_scan(warped) if enhance else warped
+    result = enhance_scan(warped) if enhance else cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
 
     _, buffer = cv2.imencode(".png", result)
     return StreamingResponse(
@@ -94,6 +93,7 @@ async def detect_preview(
         media_type="image/jpeg",
     )
 
+
 @router.post("/split-booklet")
 async def split_booklet(
     file: UploadFile = File(...),
@@ -117,7 +117,7 @@ async def split_booklet(
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, half in zip(["page_left.png", "page_right.png"], halves):
-            page = enhance_scan(half) if enhance else half
+            page = enhance_scan(half) if enhance else cv2.cvtColor(half, cv2.COLOR_BGR2GRAY)
             _, buf = cv2.imencode(".png", page)
             zf.writestr(name, buf.tobytes())
 
@@ -152,7 +152,7 @@ async def process_page(
         corners = detect_document(image, method)
         warped = four_point_transform(image, corners.reshape(4, 2))
         warped = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
-        scanned = enhance_scan(warped) if enhance else warped
+        scanned = enhance_scan(warped) if enhance else cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
         try:
             ocr_text = _ocr_handwriting(scanned)
         except Exception as exc:
@@ -171,7 +171,7 @@ async def process_page(
         halves = [spread[:, :mid], spread[:, mid:]]
         pages = []
         for i, half in enumerate(halves, start=1):
-            page = enhance_scan(half) if enhance else half
+            page = enhance_scan(half) if enhance else cv2.cvtColor(half, cv2.COLOR_BGR2GRAY)
             pages.append({"page": i, "scanned_image": _encode_b64(page)})
         return JSONResponse({"type": "booklet", "pages": pages})
 
@@ -197,25 +197,22 @@ async def extract_cover(
     warped = four_point_transform(image, corners.reshape(4, 2))
     canonical = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
 
-    denoised = cv2.fastNlMeansDenoisingColored(canonical, h=10, hColor=10)
+    gray = cv2.cvtColor(canonical, cv2.COLOR_BGR2GRAY)
+    denoised = cv2.fastNlMeansDenoising(gray, h=10)
 
     extracted: dict[str, str] = {}
-    crops_b64: dict[str, str] = {}
     for field, (x, y, w, h) in COVER_FIELDS.items():
         crop = denoised[y : y + h, x : x + w]
         if crop.size == 0:
             extracted[field] = ""
-            crops_b64[field] = ""
             continue
-        crops_b64[field] = _encode_b64(crop)
         try:
-            extracted[field] = _ocr_trocr(crop)
+            extracted[field] = _ocr_printed(crop)
         except Exception as exc:
             extracted[field] = f"[OCR error: {exc}]"
 
     return JSONResponse({
         "fields": extracted,
-        "crops": crops_b64,
         "scan_dimensions": {"width": A4_WIDTH, "height": A4_HEIGHT},
         "regions_used": {k: list(v) for k, v in COVER_FIELDS.items()},
     })

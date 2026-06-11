@@ -11,12 +11,11 @@ from detection import detect_document
 
 
 def enhance_scan(warped: np.ndarray) -> np.ndarray:
-    """CLAHE contrast enhancement on the L channel — keeps full colour."""
-    lab = cv2.cvtColor(warped, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+    """Adaptive threshold for a clean black-and-white scan look."""
+    gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+    return cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 10
+    )
 
 
 # ── OCR helpers (lazy-loaded to avoid slowing down startup) ──────────────────
@@ -50,36 +49,6 @@ def _ocr_printed(crop: np.ndarray) -> str:
         return _ocr_handwriting(crop)
 
 
-_trocr_processor = None
-_trocr_model = None
-
-
-def _get_trocr():
-    global _trocr_processor, _trocr_model
-    '''if _trocr_processor is None:
-        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-        _trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-large-handwritten")
-        _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-large-handwritten")'''
-    if _trocr_processor is None:
-        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-        _trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
-        _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-handwritten")
-    return _trocr_processor, _trocr_model
-
-
-def _ocr_trocr(crop: np.ndarray) -> str:
-    """TrOCR on a numpy crop (grayscale or BGR). Best for handwritten text."""
-    from PIL import Image as PILImage
-    processor, model = _get_trocr()
-    if crop.ndim == 2:
-        pil = PILImage.fromarray(crop).convert("RGB")
-    else:
-        pil = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-    pixel_values = processor(pil, return_tensors="pt").pixel_values
-    ids = model.generate(pixel_values)
-    return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
-
-
 # ── QR / booklet helpers ─────────────────────────────────────────────────────
 
 def detect_qr_code(image: np.ndarray) -> tuple[bool, str]:
@@ -102,4 +71,4 @@ def scan_half(crop: np.ndarray, method: str, enhance: bool) -> np.ndarray:
     corners = detect_document(crop, method)
     warped = four_point_transform(crop, corners.reshape(4, 2))
     warped = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
-    return enhance_scan(warped) if enhance else warped
+    return enhance_scan(warped) if enhance else cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
