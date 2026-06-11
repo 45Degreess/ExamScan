@@ -22,6 +22,7 @@ from processing import (
     scan_half,
     _ocr_handwriting,
     _ocr_printed,
+    _ocr_trocr,
 )
 
 router = APIRouter()
@@ -92,7 +93,6 @@ async def detect_preview(
         io.BytesIO(buffer.tobytes()),
         media_type="image/jpeg",
     )
-
 
 @router.post("/split-booklet")
 async def split_booklet(
@@ -201,18 +201,22 @@ async def extract_cover(
     denoised = cv2.fastNlMeansDenoising(gray, h=10)
 
     extracted: dict[str, str] = {}
+    crops_b64: dict[str, str] = {}
     for field, (x, y, w, h) in COVER_FIELDS.items():
         crop = denoised[y : y + h, x : x + w]
         if crop.size == 0:
             extracted[field] = ""
+            crops_b64[field] = ""
             continue
+        crops_b64[field] = _encode_b64(crop)
         try:
-            extracted[field] = _ocr_printed(crop)
+            extracted[field] = _ocr_trocr(crop)
         except Exception as exc:
             extracted[field] = f"[OCR error: {exc}]"
 
     return JSONResponse({
         "fields": extracted,
+        "crops": crops_b64,
         "scan_dimensions": {"width": A4_WIDTH, "height": A4_HEIGHT},
         "regions_used": {k: list(v) for k, v in COVER_FIELDS.items()},
     })
