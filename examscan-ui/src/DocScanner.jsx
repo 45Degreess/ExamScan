@@ -522,10 +522,30 @@ export default function DocScanner() {
               {Object.entries(coverData.fields).map(([key, value], i) => (
                 <div key={key} style={{
                   display: "grid",
-                  gridTemplateColumns: "180px 1fr",
+                  gridTemplateColumns: "160px 150px 1fr",
                   borderBottom: i < Object.keys(coverData.fields).length - 1
                     ? `1px solid ${palette.border}` : "none",
                 }}>
+                  {/* Bounding box crop */}
+                  <div style={{
+                    padding: 8,
+                    borderRight: `1px solid ${palette.border}`,
+                    background: "#111",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}>
+                    {coverData.crops?.[key] ? (
+                      <img
+                        src={`data:image/png;base64,${coverData.crops[key]}`}
+                        alt={`${key} region`}
+                        style={{ width: "100%", display: "block", borderRadius: 4 }}
+                      />
+                    ) : (
+                      <span style={{ fontSize: 11, color: palette.textMuted }}>no crop</span>
+                    )}
+                  </div>
+                  {/* Field name */}
                   <div style={{
                     padding: "12px 16px",
                     background: palette.amberMuted,
@@ -540,11 +560,14 @@ export default function DocScanner() {
                   }}>
                     {key.replace(/_/g, " ")}
                   </div>
+                  {/* OCR value */}
                   <div style={{
                     padding: "12px 16px",
                     fontSize: 14,
                     color: value ? palette.text : palette.textMuted,
                     fontStyle: value ? "normal" : "italic",
+                    display: "flex",
+                    alignItems: "center",
                   }}>
                     {value || "—"}
                   </div>

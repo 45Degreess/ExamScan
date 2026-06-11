@@ -49,6 +49,32 @@ def _ocr_printed(crop: np.ndarray) -> str:
         return _ocr_handwriting(crop)
 
 
+_trocr_processor = None
+_trocr_model = None
+
+
+def _get_trocr():
+    global _trocr_processor, _trocr_model
+    if _trocr_processor is None:
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+        _trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-large-handwritten")
+        _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-large-handwritten")
+    return _trocr_processor, _trocr_model
+
+
+def _ocr_trocr(crop: np.ndarray) -> str:
+    """TrOCR on a numpy crop (grayscale or BGR). Best for handwritten text."""
+    from PIL import Image as PILImage
+    processor, model = _get_trocr()
+    if crop.ndim == 2:
+        pil = PILImage.fromarray(crop).convert("RGB")
+    else:
+        pil = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+    pixel_values = processor(pil, return_tensors="pt").pixel_values
+    ids = model.generate(pixel_values)
+    return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+
+
 # ── QR / booklet helpers ─────────────────────────────────────────────────────
 
 def detect_qr_code(image: np.ndarray) -> tuple[bool, str]:
