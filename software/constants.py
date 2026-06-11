@@ -13,7 +13,7 @@ A3_HEIGHT = A4_HEIGHT      # 3508 px
 #   3. Record top-left (x, y) and size (w, h) for each field.
 #   4. Replace the values below and restart the server.
 COVER_FIELDS: dict[str, tuple[int, int, int, int]] = {
-    "Emplid":      (446,  971,  752,  170),
-    "Course Code": (122,  1658, 1156, 188),
-    "subject":     (240,  1120, 1400, 140),
+    "Emplid":          (471,  992,  693,  125),
+    "Course Code":     (617,  1638, 597,  131),
+    "number of pages": (130,  701,  733,  241),
 }
