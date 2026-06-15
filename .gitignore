@@ -10,3 +10,4 @@ wheels/
 .venv
 
 motor copy.py
+hardware/find_focus.py

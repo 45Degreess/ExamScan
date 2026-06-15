@@ -22,9 +22,9 @@ PORT = 8000
 def main():
     CAPTURE_DIR.mkdir(exist_ok=True)
 
-    motor = StepperMotor()
+    # motor = StepperMotor()
     picam2, camera_config, capture_config = make_camera()
-    server = CameraServer(("0.0.0.0", PORT), picam2, camera_config, capture_config, motor)
+    server = CameraServer(("0.0.0.0", PORT), picam2, camera_config, capture_config)
 
     picam2.configure(camera_config)
     picam2.start_recording(MJPEGEncoder(), FileOutput(server.stream_output))
@@ -45,7 +45,7 @@ def main():
             picam2.stop_recording()
         except Exception:
             pass
-        motor.cleanup()
+        #motor.cleanup()
         print("Stopped.")
 
 

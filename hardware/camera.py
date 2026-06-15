@@ -9,9 +9,9 @@ from datetime import date
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-STATIC_DIR = Path(__file__).parent / "static"
-CAPTURE_DIR = Path(__file__).parent / "captures"
-LENS_POSITION = 0.97
+STATIC_DIR = Path(__file__).parent.parent / "static"
+CAPTURE_DIR = Path(__file__).parent.parent / "captures"
+LENS_POSITION = 0.94
 PREVIEW_SIZE = (1920, 1080)
 CAPTURE_SIZE = (4608, 2592)
 FRAME_RATE = 30
@@ -103,7 +103,7 @@ class StreamHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"filename": filename, "count": server.capture_count})
 
             time.sleep(2)
-            server.motor.move_degrees(360)
+            #server.motor.move_degrees(360)
 
         except Exception as e:
             print(f"Capture error: {e}")
@@ -132,12 +132,12 @@ class StreamHandler(BaseHTTPRequestHandler):
 
 
 class CameraServer(HTTPServer):
-    def __init__(self, server_address, picam2, camera_config, capture_config, motor):
+    def __init__(self, server_address, picam2, camera_config, capture_config):
         super().__init__(server_address, StreamHandler)
         self.picam2 = picam2
         self.camera_config = camera_config
         self.capture_config = capture_config
-        self.motor = motor
+        # self.motor = motor
         self.stream_output = StreamOutput()
         self.capture_count = 0
         self.capture_lock = threading.Lock()
