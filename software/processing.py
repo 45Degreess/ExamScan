@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 
 import cv2
 import numpy as np
@@ -8,6 +9,8 @@ from imutils.perspective import four_point_transform
 
 from constants import A4_WIDTH, A4_HEIGHT
 from detection import detect_document
+
+_MODEL_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".model_cache")
 
 
 def enhance_scan(warped: np.ndarray) -> np.ndarray:
@@ -52,18 +55,33 @@ def _ocr_printed(crop: np.ndarray) -> str:
 
 _trocr_processor = None
 _trocr_model = None
+_trocr_device = None
+
+
+def _get_trocr_device():
+    global _trocr_device
+    if _trocr_device is None:
+        import torch  # noqa: PLC0415
+        if torch.backends.mps.is_available():
+            _trocr_device = "mps"
+        elif torch.cuda.is_available():
+            _trocr_device = "cuda"
+        else:
+            _trocr_device = "cpu"
+    return _trocr_device
 
 
 def _get_trocr():
     global _trocr_processor, _trocr_model
-    '''if _trocr_processor is None:
-        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-        _trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-large-handwritten")
-        _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-large-handwritten")'''
     if _trocr_processor is None:
         from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-        _trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
-        _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-handwritten")
+        _trocr_processor = TrOCRProcessor.from_pretrained(
+            "microsoft/trocr-base-handwritten", cache_dir=_MODEL_CACHE_DIR
+        )
+        _trocr_model = VisionEncoderDecoderModel.from_pretrained(
+            "microsoft/trocr-base-handwritten", cache_dir=_MODEL_CACHE_DIR
+        )
+        _trocr_model = _trocr_model.to(_get_trocr_device())
     return _trocr_processor, _trocr_model
 
 
@@ -75,7 +93,7 @@ def _ocr_trocr(crop: np.ndarray) -> str:
         pil = PILImage.fromarray(crop).convert("RGB")
     else:
         pil = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-    pixel_values = processor(pil, return_tensors="pt").pixel_values
+    pixel_values = processor(pil, return_tensors="pt").pixel_values.to(_get_trocr_device())
     ids = model.generate(pixel_values)
     return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
 

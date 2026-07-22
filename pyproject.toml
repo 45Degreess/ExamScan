@@ -11,10 +11,12 @@ dependencies = [
     "opencv-python>=4.10",
     "numpy>=1.26",
     "imutils>=0.5.4",
-    "scipy>=1.13",
-    "transformers>=4.46",
+    "transformers>=4.46,<5",
     "torch>=2.5",
     "pillow>=10.4",
+    "sentencepiece>=0.2.2",
+    "easyocr>=1.7.2",
+    "pytesseract>=0.3.13",
 ]
 
 [project.optional-dependencies]
