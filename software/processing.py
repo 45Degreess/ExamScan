@@ -62,8 +62,8 @@ def _get_trocr():
         _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-large-handwritten")'''
     if _trocr_processor is None:
         from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-        _trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-stage1")
-        _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-stage1")
+        _trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
+        _trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-handwritten")
     return _trocr_processor, _trocr_model
 
 
