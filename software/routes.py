@@ -37,6 +37,37 @@ async def _decode_upload(file: UploadFile) -> np.ndarray:
     return image
 
 
+def _extract_cover_fields(canonical: np.ndarray) -> dict:
+    """
+    Run the extract-cover OCR pipeline on an already-scanned A4 cover image.
+
+    Returns a dict with 'fields', 'crops', 'scan_dimensions', and 'regions_used',
+    matching the /extract-cover response shape.
+    """
+    denoised = cv2.fastNlMeansDenoisingColored(canonical, h=10, hColor=10)
+
+    extracted: dict[str, str] = {}
+    crops_b64: dict[str, str] = {}
+    for field, (x, y, w, h) in COVER_FIELDS.items():
+        crop = denoised[y : y + h, x : x + w]
+        if crop.size == 0:
+            extracted[field] = ""
+            crops_b64[field] = ""
+            continue
+        crops_b64[field] = _encode_b64(crop)
+        try:
+            extracted[field] = _ocr_trocr(crop)
+        except Exception as exc:
+            extracted[field] = f"[OCR error: {exc}]"
+
+    return {
+        "fields": extracted,
+        "crops": crops_b64,
+        "scan_dimensions": {"width": A4_WIDTH, "height": A4_HEIGHT},
+        "regions_used": {k: list(v) for k, v in COVER_FIELDS.items()},
+    }
+
+
 @router.get("/health")
 async def health():
     return {"status": "ok"}
@@ -154,14 +185,16 @@ async def process_page(
         warped = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
         scanned = enhance_scan(warped) if enhance else warped
         try:
-            ocr_text = _ocr_handwriting(scanned)
+            extraction = _extract_cover_fields(warped)
         except Exception as exc:
             ocr_text = f"[OCR unavailable: {exc}]"
+
         return JSONResponse({
             "type": "first_page",
             "qr_data": qr_data,
             "scanned_image": _encode_b64(scanned),
             "ocr_text": ocr_text,
+            **extraction,
         })
     else:
         corners = detect_document(image, method)
@@ -197,28 +230,8 @@ async def extract_cover(
     warped = four_point_transform(image, corners.reshape(4, 2))
     canonical = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
 
-    denoised = cv2.fastNlMeansDenoisingColored(canonical, h=10, hColor=10)
-
-    extracted: dict[str, str] = {}
-    crops_b64: dict[str, str] = {}
-    for field, (x, y, w, h) in COVER_FIELDS.items():
-        crop = denoised[y : y + h, x : x + w]
-        if crop.size == 0:
-            extracted[field] = ""
-            crops_b64[field] = ""
-            continue
-        crops_b64[field] = _encode_b64(crop)
-        try:
-            extracted[field] = _ocr_trocr(crop)
-        except Exception as exc:
-            extracted[field] = f"[OCR error: {exc}]"
-
-    return JSONResponse({
-        "fields": extracted,
-        "crops": crops_b64,
-        "scan_dimensions": {"width": A4_WIDTH, "height": A4_HEIGHT},
-        "regions_used": {k: list(v) for k, v in COVER_FIELDS.items()},
-    })
+    result = _extract_cover_fields(canonical)
+    return JSONResponse(result)
 
 
 @router.get("/samples")
