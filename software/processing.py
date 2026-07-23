@@ -85,6 +85,14 @@ def _get_trocr():
     return _trocr_processor, _trocr_model
 
 
+def _preprocess_for_ocr(crop: np.ndarray) -> np.ndarray:
+    """Grayscale + adaptive threshold to boost OCR contrast on a field crop."""
+    gray = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    return cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15
+    )
+
+
 def _ocr_trocr(crop: np.ndarray) -> str:
     """TrOCR on a numpy crop (grayscale or BGR). Best for handwritten text."""
     from PIL import Image as PILImage
@@ -94,7 +102,7 @@ def _ocr_trocr(crop: np.ndarray) -> str:
     else:
         pil = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
     pixel_values = processor(pil, return_tensors="pt").pixel_values.to(_get_trocr_device())
-    ids = model.generate(pixel_values)
+    ids = model.generate(pixel_values, max_length=50, num_beams=5)
     return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
 
