@@ -51,12 +51,14 @@ class RunManager:
     def list_runs(self):
         """Summarise every run on disk, newest first.
 
-        run_id is timestamp-prefixed, so sorting names in reverse is
-        chronological. A corrupt or half-written manifest is skipped rather
-        than breaking the listing for every other run.
+        Sorted on created_at, not run_id: run_id only carries second
+        resolution, so two runs made in the same second would tie on the
+        timestamp and fall through to the random uuid suffix. A corrupt or
+        half-written manifest is skipped rather than breaking the listing for
+        every other run.
         """
         summaries = []
-        for run_dir in sorted(self.root.iterdir(), key=lambda p: p.name, reverse=True):
+        for run_dir in self.root.iterdir():
             manifest_path = run_dir / "manifest.json"
             if not run_dir.is_dir() or not manifest_path.exists():
                 continue
@@ -74,6 +76,7 @@ class RunManager:
                     "updated_at": manifest.get("updated_at"),
                 }
             )
+        summaries.sort(key=lambda run: (run["created_at"] or "", run["run_id"]), reverse=True)
         return summaries
 
     def next_capture_path(self, run_id):
