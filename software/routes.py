@@ -8,16 +8,26 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
+import httpx
 import numpy as np
 from imutils.perspective import four_point_transform
 from PIL import Image as PILImage
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 SAMPLE_DIR = Path(__file__).parent / "sample_images"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
-from constants import A4_WIDTH, A4_HEIGHT, A3_WIDTH, A3_HEIGHT, COVER_FIELDS, MCQ_COVER_FIELDS
+from constants import (
+    A4_WIDTH,
+    A4_HEIGHT,
+    A3_WIDTH,
+    A3_HEIGHT,
+    COVER_FIELDS,
+    MCQ_COVER_FIELDS,
+    RUNS_API_BASE_URL,
+)
 from detection import detect_document
 from processing import (
     enhance_scan,
@@ -399,6 +409,45 @@ async def process_folder(
 
     else:
         raise HTTPException(status_code=400, detail="Provide either folder_path or files.")
+
+
+@router.post("/demo_exam_folder")
+async def demo_exam_folder(
+    run_id: str = Form(...),
+    method: str = Form(default="colour"),
+    enhance: bool = Form(default=True),
+):
+    """
+    Batch-process a run's exam-script pages fetched from the remote runs API
+    (GET {RUNS_API_BASE_URL}/api/runs/{run_id}/archive) instead of a local
+    folder or upload.
+
+    Functionally identical to /process-folder's pipeline, but the input
+    images are downloaded as a ZIP archive. Output is persisted to
+    software/demo_output/<run_id>/; nothing is returned to the caller on
+    success.
+    """
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{RUNS_API_BASE_URL}/api/runs/{run_id}/archive")
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to download archive for run {run_id} (status {resp.status_code}).",
+        )
+
+    staging = Path(tempfile.mkdtemp(prefix="examscan_demo_"))
+    try:
+        input_dir = staging / "input"
+        input_dir.mkdir()
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            zf.extractall(input_dir)
+
+        output_dir = Path(__file__).parent / "demo_output" / run_id
+        _process_exam_folder(input_dir, output_dir, method, enhance)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    return Response(status_code=204)
 
 
 @router.get("/samples")

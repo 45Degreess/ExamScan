@@ -15,12 +15,5 @@ wheels/
 motor copy.py
 hardware/find_focus.py
 
-# Agent worktrees and session state
-.claude/
-
-# Scan output and calibration scratch
-runs/
-focus_tests/
-
-# Local backups taken before editing
-*.bak
+# Runtime output from /demo_exam_folder
+software/demo_output/
