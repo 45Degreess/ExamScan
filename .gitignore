@@ -14,3 +14,6 @@ wheels/
 
 motor copy.py
 hardware/find_focus.py
+
+# Runtime output from /demo_exam_folder
+software/demo_output/

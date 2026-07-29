@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# Base URL of the runs API that serves page archives at
+# GET {RUNS_API_BASE_URL}/api/runs/{id}/archive.
+# TODO: update to the real runs-API host once deployed/known.
+RUNS_API_BASE_URL = "http://localhost:8000"
+
 A4_WIDTH  = 2480   # 210 mm at 300 DPI
 A4_HEIGHT = 3508   # 297 mm at 300 DPI
 
