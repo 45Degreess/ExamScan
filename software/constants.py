@@ -21,6 +21,6 @@ COVER_FIELDS: dict[str, tuple[int, int, int, int]] = {
 # Placeholder regions for the MCQ answer-sheet layout — calibrate against a
 # real MCQ scan the same way as COVER_FIELDS above before relying on these.
 MCQ_COVER_FIELDS: dict[str, tuple[int, int, int, int]] = {
-    "Emplid":      (0, 0, 100, 100),
-    "Course Code": (0, 0, 100, 100),
+    "Emplid":      (106, 117, 274, 41),
+    "Course Code": (140, 164, 240, 37),
 }
