@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 SAMPLE_DIR = Path(__file__).parent / "sample_images"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
-from constants import A4_WIDTH, A4_HEIGHT, A3_WIDTH, A3_HEIGHT, COVER_FIELDS
+from constants import A4_WIDTH, A4_HEIGHT, A3_WIDTH, A3_HEIGHT, COVER_FIELDS, MCQ_COVER_FIELDS
 from detection import detect_document
 from processing import (
     enhance_scan,
@@ -42,9 +42,12 @@ async def _decode_upload(file: UploadFile) -> np.ndarray:
     return image
 
 
-def _extract_cover_fields(canonical: np.ndarray) -> dict:
+def _extract_cover_fields(canonical: np.ndarray, fields: dict[str, tuple[int, int, int, int]]) -> dict:
     """
-    Run the extract-cover OCR pipeline on an already-scanned A4 cover image.
+    Run the cover-field OCR pipeline on an already-scanned A4 cover image.
+
+    `fields` maps field name -> (x, y, w, h) region on the canonical image,
+    e.g. COVER_FIELDS or MCQ_COVER_FIELDS, so this can be reused across page layouts.
 
     Returns a dict with 'fields', 'crops', 'scan_dimensions', and 'regions_used',
     matching the /extract-cover response shape.
@@ -53,7 +56,7 @@ def _extract_cover_fields(canonical: np.ndarray) -> dict:
 
     extracted: dict[str, str] = {}
     crops_b64: dict[str, str] = {}
-    for field, (x, y, w, h) in COVER_FIELDS.items():
+    for field, (x, y, w, h) in fields.items():
         crop = denoised[y : y + h, x : x + w]
         if crop.size == 0:
             extracted[field] = ""
@@ -70,7 +73,7 @@ def _extract_cover_fields(canonical: np.ndarray) -> dict:
         "fields": extracted,
         "crops": crops_b64,
         "scan_dimensions": {"width": A4_WIDTH, "height": A4_HEIGHT},
-        "regions_used": {k: list(v) for k, v in COVER_FIELDS.items()},
+        "regions_used": {k: list(v) for k, v in fields.items()},
     }
 
 
@@ -106,7 +109,7 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
             warped = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
             scanned = enhance_scan(warped) if enhance else warped
             try:
-                extraction = _extract_cover_fields(warped)
+                extraction = _extract_cover_fields(warped, COVER_FIELDS)
                 student_info = extraction["fields"]
             except Exception as exc:
                 student_info = {"error": str(exc)}
@@ -268,7 +271,7 @@ async def process_page(
         warped = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
         scanned = enhance_scan(warped) if enhance else warped
         try:
-            extraction = _extract_cover_fields(warped)
+            extraction = _extract_cover_fields(warped, COVER_FIELDS)
             ocr_text = "success"
         except Exception as exc:
             ocr_text = f"[OCR unavailable: {exc}]"
@@ -314,7 +317,28 @@ async def extract_cover(
     warped = four_point_transform(image, corners.reshape(4, 2))
     canonical = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
 
-    result = _extract_cover_fields(canonical)
+    result = _extract_cover_fields(canonical, COVER_FIELDS)
+    return JSONResponse(result)
+
+
+@router.post("/extract-mcq-cover")
+async def extract_mcq_cover(
+    file: UploadFile = File(...),
+    method: str = Form(default="colour"),
+):
+    """
+    Upload an MCQ answer-sheet photo → scan it → OCR MCQ field regions → return JSON.
+
+    Same response shape as /extract-cover, using MCQ_COVER_FIELDS (placeholder
+    regions — calibrate against a real MCQ scan before relying on this).
+    """
+    image = await _decode_upload(file)
+
+    corners = detect_document(image, method)
+    warped = four_point_transform(image, corners.reshape(4, 2))
+    canonical = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
+
+    result = _extract_cover_fields(canonical, MCQ_COVER_FIELDS)
     return JSONResponse(result)
 
 
