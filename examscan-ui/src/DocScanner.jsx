@@ -21,6 +21,7 @@ export default function DocScanner() {
   const [loading, setLoading] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [extracting, setExtracting] = useState(false);
+  const [extractingMcq, setExtractingMcq] = useState(false);
   const [splitting, setSplitting] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [processResult, setProcessResult] = useState(null);
@@ -169,6 +170,29 @@ export default function DocScanner() {
       setError(e.message);
     } finally {
       setExtracting(false);
+    }
+  };
+
+  const extractMcqCover = async () => {
+    if (!sourceImage) return;
+    setExtractingMcq(true);
+    setError(null);
+    setCoverData(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", sourceImage);
+      const res = await fetch(`${API_BASE}/extract-mcq-cover`, { method: "POST", body: fd });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Extraction failed");
+      }
+      const data = await res.json();
+      setCoverData(data);
+      setPhase("cover");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setExtractingMcq(false);
     }
   };
 
@@ -454,6 +478,9 @@ export default function DocScanner() {
                 </Btn>
                 <Btn onClick={extractCover} disabled={extracting} style={{ borderColor: palette.amber, color: palette.amber }}>
                   {extracting ? "⏳ Extracting…" : "📋 Extract Cover"}
+                </Btn>
+                <Btn onClick={extractMcqCover} disabled={extractingMcq} style={{ borderColor: palette.amber, color: palette.amber }}>
+                  {extractingMcq ? "⏳ Extracting…" : "🔲 Extract MCQ Cover"}
                 </Btn>
                 <Btn onClick={splitBooklet} disabled={splitting} style={{ borderColor: palette.amber, color: palette.amber }}>
                   {splitting ? "⏳ Splitting…" : "📖 Split Booklet"}
