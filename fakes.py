@@ -100,6 +100,25 @@ class FakeWheelMotor:
         pass
 
 
+class FakeStepperMotor:
+    """Records rotations. With delay=True it also takes time doing them."""
+
+    def __init__(self, delay=False):
+        self.delay = delay
+        self.moves = []
+
+    def move_degrees(self, degrees, clockwise=True):
+        self.moves.append({"degrees": degrees, "clockwise": clockwise})
+        if self.delay:
+            time.sleep(degrees / 360.0)
+
+    def disable(self):
+        pass
+
+    def cleanup(self):
+        pass
+
+
 class FakeServo:
     def __init__(self, delay=False):
         self.delay = delay

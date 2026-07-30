@@ -8,7 +8,7 @@ runs_dir, so the archive endpoint works against real files on disk.
     uv run examscan-dev
 """
 
-from fakes import FakeCamera, FakeServoController, FakeWheelMotor
+from fakes import FakeCamera, FakeServoController, FakeStepperMotor, FakeWheelMotor
 from server import load_config, serve
 
 BANNER = "ExamScan DEV MODE - fake hardware, no camera or GPIO in use"
@@ -20,10 +20,11 @@ def main():
     camera = FakeCamera()
     wheel_motor = FakeWheelMotor(delay=True)
     servos = FakeServoController(delay=True)
+    stepper = FakeStepperMotor(delay=True)
 
     camera.start_streaming()
 
-    serve(config_manager, config, camera, wheel_motor, servos, banner=BANNER)
+    serve(config_manager, config, camera, wheel_motor, servos, stepper, banner=BANNER)
 
 
 if __name__ == "__main__":

@@ -236,6 +236,7 @@ class ExamScanServer(ThreadingHTTPServer):
         camera,
         wheel_motor,
         servos,
+        stepper,
         handler=ExamScanHandler,
     ):
         super().__init__(address, handler)
@@ -244,6 +245,7 @@ class ExamScanServer(ThreadingHTTPServer):
         self.camera = camera
         self.wheel_motor = wheel_motor
         self.servos = servos
+        self.stepper = stepper
         self.run_manager = RunManager(config)
         self.operation_lock = threading.Lock()
         self.operation_name = None
@@ -307,9 +309,15 @@ class ExamScanServer(ThreadingHTTPServer):
             raise
 
     def page_turn(self):
+        """Drop the arm, spin the wheel, turn the stepper, lift, return the stepper.
+
+        The stepper goes back the way it came once the arm is clear, so the
+        wheel ends every page turn where it started and cannot creep round.
+        """
         servo_config = self.config["servos"]["page_drop"]
         workflow = self.config["workflow"]
         dc_motor_config = self.config["dc_motor"]
+        motor_config = self.config["motor"]
         page_drop_servo = self.servos.page_drop
 
         page_drop_servo.set_angle(
@@ -317,17 +325,31 @@ class ExamScanServer(ThreadingHTTPServer):
             settle_time=servo_config["default_settle_time"],
         )
         time.sleep(workflow["servo_down_pause"])
+
         self.wheel_motor.run_for(
             dc_motor_config["default_turn_seconds"],
             speed=dc_motor_config["default_speed"],
             forward=dc_motor_config["default_forward"],
             brake=dc_motor_config["brake_after_turn"],
         )
+        time.sleep(workflow["wheel_pause"])
+
+        self.stepper.move_degrees(
+            motor_config["default_degrees"],
+            clockwise=motor_config["default_clockwise"],
+        )
+        time.sleep(workflow["stepper_pause"])
+
         page_drop_servo.set_angle(
             servo_config["up_angle"],
             settle_time=servo_config["default_settle_time"],
         )
         time.sleep(workflow["servo_up_pause"])
+
+        self.stepper.move_degrees(
+            motor_config["default_degrees"],
+            clockwise=not motor_config["default_clockwise"],
+        )
 
     def scan_step(self, run_id):
         manifest = self.capture_page(run_id)
@@ -382,6 +404,7 @@ def serve(
     camera,
     wheel_motor,
     servos,
+    stepper,
     banner=None,
     handler=ExamScanHandler,
 ):
@@ -393,7 +416,14 @@ def serve(
     """
     address = (config["server"]["host"], config["server"]["port"])
     server = ExamScanServer(
-        address, config_manager, config, camera, wheel_motor, servos, handler=handler
+        address,
+        config_manager,
+        config,
+        camera,
+        wheel_motor,
+        servos,
+        stepper,
+        handler=handler,
     )
 
     if banner:
@@ -410,4 +440,6 @@ def serve(
         camera.stop()
         wheel_motor.cleanup()
         servos.cleanup()
+        # Last, so its pull-up restore lands after everything else is released.
+        stepper.cleanup()
         print("Stopped.")

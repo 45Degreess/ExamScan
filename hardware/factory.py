@@ -5,7 +5,7 @@ Shared by the entry points that drive an actual scanner (`main.py`,
 """
 
 from hardware.camera import CameraController, StreamOutput, make_camera
-from hardware.motor import DCMotor
+from hardware.motor import DCMotor, StepperMotor
 from hardware.servo import ServoController
 
 
@@ -20,4 +20,5 @@ def build_hardware(config):
     )
     wheel_motor = DCMotor.from_config(config["dc_motor"])
     servos = ServoController.from_config(config["servos"])
-    return camera, wheel_motor, servos
+    stepper = StepperMotor.from_config(config["motor"])
+    return camera, wheel_motor, servos, stepper

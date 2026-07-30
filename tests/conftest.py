@@ -8,12 +8,24 @@ import tomli_w
 from PIL import Image
 
 from config import DEFAULT_CONFIG, ConfigManager
-from fakes import FakeCamera, FakeServo, FakeServoController, FakeWheelMotor
+from fakes import (
+    FakeCamera,
+    FakeServo,
+    FakeServoController,
+    FakeStepperMotor,
+    FakeWheelMotor,
+)
 from server import ExamScanServer
 
 # Re-exported so tests can import the fakes from here rather than reaching
 # into the module the dev server also uses.
-__all__ = ["FakeCamera", "FakeServo", "FakeServoController", "FakeWheelMotor"]
+__all__ = [
+    "FakeCamera",
+    "FakeServo",
+    "FakeServoController",
+    "FakeStepperMotor",
+    "FakeWheelMotor",
+]
 
 
 @pytest.fixture()
@@ -32,6 +44,11 @@ def config_dict(tmp_path):
     """
     config = deepcopy(DEFAULT_CONFIG)
     config["paths"]["runs_dir"] = str(tmp_path / "runs")
+    # page_turn() sleeps these for real, and they exist to pace a mechanism no
+    # test is driving. Left at their defaults, a multi-page auto-scan outruns the
+    # client timeout.
+    for pause in ("servo_down_pause", "wheel_pause", "stepper_pause", "servo_up_pause"):
+        config["workflow"][pause] = 0.0
     return config
 
 
@@ -99,6 +116,7 @@ def api_server(config_manager, config, sample_image):
         FakeCamera(sample_image),
         FakeWheelMotor(),
         FakeServoController(),
+        FakeStepperMotor(),
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

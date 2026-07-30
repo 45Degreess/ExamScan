@@ -6,7 +6,13 @@ import zipfile
 import tomli_w
 
 from server import ExamScanHandler, ExamScanServer
-from tests.conftest import ApiClient, FakeCamera, FakeServoController, FakeWheelMotor
+from tests.conftest import (
+    ApiClient,
+    FakeCamera,
+    FakeServoController,
+    FakeStepperMotor,
+    FakeWheelMotor,
+)
 
 
 def test_health_returns_json(api_client):
@@ -124,6 +130,7 @@ def test_custom_handler_overrides_root_but_inherits_the_api(
         FakeCamera(sample_image),
         FakeWheelMotor(),
         FakeServoController(),
+        FakeStepperMotor(),
         handler=PageHandler,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -230,17 +237,48 @@ def test_auto_scan_without_body_uses_configured_default(api_client, api_server):
     assert completed.json["page_count"] == 2
 
 
-def test_page_turn_workflow_uses_servo_and_dc_motor(api_client, api_server):
+def test_page_turn_runs_all_five_phases(api_client, api_server):
     run_id = api_client.post("/api/runs").json["run_id"]
 
     response = api_client.post(f"/api/runs/{run_id}/page-turn")
 
     assert response.status == 200
     assert response.json == {"ok": True, "run_id": run_id}
+
+    # Arm down then up.
+    assert [item["degrees"] for item in api_server.servos.page_drop.angles] == [105, 45]
+    # One wheel spin.
     assert api_server.wheel_motor.turns == [
         {"seconds": 3.0, "speed": 100, "forward": True, "brake": False}
     ]
-    assert [item["degrees"] for item in api_server.servos.page_drop.angles] == [105, 45]
+    # Stepper out and back: same travel, opposite directions, so the wheel ends
+    # where it started.
+    out, back = api_server.stepper.moves
+    assert out["degrees"] == back["degrees"] == 190.0
+    assert out["clockwise"] is not back["clockwise"]
+
+
+def test_page_turn_returns_the_stepper_after_the_arm_lifts(api_client, api_server):
+    """Phase 5 must come after the lift, not before it."""
+    order = []
+    api_server.servos.page_drop.set_angle = lambda degrees, settle_time=None: order.append(
+        f"servo:{degrees}"
+    )
+    api_server.stepper.move_degrees = lambda degrees, clockwise=True: order.append(
+        f"stepper:{'cw' if clockwise else 'ccw'}"
+    )
+    api_server.wheel_motor.run_for = lambda *a, **k: order.append("wheel")
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    assert order == [
+        "servo:105",
+        "wheel",
+        "stepper:cw",
+        "servo:45",
+        "stepper:ccw",
+    ]
 
 
 def test_concurrent_hardware_actions_return_409(api_server, api_client, sample_image):
