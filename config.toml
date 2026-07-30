@@ -28,16 +28,17 @@ steps_per_rev = 200
 step_delay = 0.005
 fast_delay = 0.001
 default_turn_seconds = 3.0
-default_clockwise = true
+default_degrees = 190.0
+default_clockwise = false
 
 [dc_motor]
 in1_pin = 23
 in2_pin = 24
 enable_pin = 25
 pwm_freq = 100
-default_speed = 100
-default_turn_seconds = 3.0
-default_forward = true
+default_speed = 50
+default_turn_seconds = 0.3
+default_forward = false
 brake_after_turn = false
 
 [servos.page_drop]
@@ -47,39 +48,56 @@ max_angle = 180
 min_pulse_width = 0.0005
 max_pulse_width = 0.0025
 frame_width = 0.02
-down_angle = 105
-up_angle = 0
-default_settle_time = 0.4
-detach_after_move = true
-pin_factory = "pigpio"
-
-[servos.page_clamp_left]
-pin = 18
-min_angle = 0
-max_angle = 180
-min_pulse_width = 0.0005
-max_pulse_width = 0.0025
-frame_width = 0.02
-down_angle = 90
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
+down_angle = 95
 up_angle = 0
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
 [servos.page_clamp_right]
-pin = 19
+pin = 18
 min_angle = 0
 max_angle = 180
 min_pulse_width = 0.0005
 max_pulse_width = 0.0025
 frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
 down_angle = 90
 up_angle = 0
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
+[servos.page_clamp_left]
+pin = 19
+min_angle = 0
+max_angle = 180
+min_pulse_width = 0.0005
+max_pulse_width = 0.0025
+frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
+down_angle = 73
+up_angle = 0
+default_settle_time = 0.4
+detach_after_move = true
+pin_factory = "pigpio"
+
 [workflow]
-servo_down_pause = 2.0
+servo_down_pause = 1.0
+wheel_pause = 1.0
+stepper_pause = 1.0
 servo_up_pause = 1.0
 default_pages = 7
