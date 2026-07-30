@@ -162,4 +162,4 @@ class StepperMotor:
 
     def cleanup(self):
         self.disable()
-        GPIO.cleanup()
+        GPIO.cleanup([self._step_pin, self._dir_pin, self._enable_pin])
