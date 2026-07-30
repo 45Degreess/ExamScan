@@ -43,6 +43,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "step_delay": 0.005,
         "fast_delay": 0.001,
         "default_turn_seconds": 3.0,
+        "default_degrees": 190.0,
         "default_clockwise": True,
     },
     "dc_motor": {
@@ -63,6 +64,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "min_pulse_width": 0.0005,
             "max_pulse_width": 0.0025,
             "frame_width": 0.02,
+            "step_degrees": 3.0,
+            "step_delay": 0.015,
+            "approach_degrees": 40.0,
+            "approach_step_degrees": 1.0,
+            "approach_step_delay": 0.04,
             "down_angle": 105,
             "up_angle": 45,
             "default_settle_time": 0.4,
@@ -76,6 +82,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "min_pulse_width": 0.0005,
             "max_pulse_width": 0.0025,
             "frame_width": 0.02,
+            "step_degrees": 3.0,
+            "step_delay": 0.015,
+            "approach_degrees": 40.0,
+            "approach_step_degrees": 1.0,
+            "approach_step_delay": 0.04,
             "down_angle": 105,
             "up_angle": 0,
             "default_settle_time": 0.4,
@@ -89,6 +100,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "min_pulse_width": 0.0005,
             "max_pulse_width": 0.0025,
             "frame_width": 0.02,
+            "step_degrees": 3.0,
+            "step_delay": 0.015,
+            "approach_degrees": 40.0,
+            "approach_step_degrees": 1.0,
+            "approach_step_delay": 0.04,
             "down_angle": 105,
             "up_angle": 0,
             "default_settle_time": 0.4,
@@ -98,6 +114,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "workflow": {
         "servo_down_pause": 2.0,
+        "wheel_pause": 1.0,
+        "stepper_pause": 1.0,
         "servo_up_pause": 1.0,
         "default_pages": 7,
     },
@@ -256,6 +274,9 @@ class ConfigManager:
         self._require_number(motor, "step_delay", "motor", minimum=0)
         self._require_number(motor, "fast_delay", "motor", minimum=0)
         self._require_number(motor, "default_turn_seconds", "motor", minimum=0)
+        self._require_number(motor, "default_degrees", "motor", minimum=0)
+        if motor["default_degrees"] <= 0:
+            raise ConfigError("motor.default_degrees must be greater than 0")
         self._require_bool(motor, "default_clockwise", "motor")
 
         dc_motor = config["dc_motor"]
@@ -281,6 +302,8 @@ class ConfigManager:
 
         workflow = config["workflow"]
         self._require_number(workflow, "servo_down_pause", "workflow", minimum=0)
+        self._require_number(workflow, "wheel_pause", "workflow", minimum=0)
+        self._require_number(workflow, "stepper_pause", "workflow", minimum=0)
         self._require_number(workflow, "servo_up_pause", "workflow", minimum=0)
         self._require_int(workflow, "default_pages", "workflow", minimum=1)
 
@@ -329,6 +352,16 @@ class ConfigManager:
         self._require_number(servo, "min_pulse_width", section, minimum=0)
         self._require_number(servo, "max_pulse_width", section, minimum=0)
         self._require_number(servo, "frame_width", section, minimum=0)
+        self._require_number(servo, "step_degrees", section, minimum=0)
+        self._require_number(servo, "step_delay", section, minimum=0)
+        self._require_number(servo, "approach_degrees", section, minimum=0)
+        self._require_number(servo, "approach_step_degrees", section, minimum=0)
+        self._require_number(servo, "approach_step_delay", section, minimum=0)
+        # Strictly positive, or the ramp loop in ServoMotor._steps would never
+        # close the gap. Set the delays to 0 for full speed instead.
+        for key in ("step_degrees", "approach_step_degrees"):
+            if servo[key] <= 0:
+                raise ConfigError(f"{section}.{key} must be greater than 0")
         self._require_number(servo, "down_angle", section)
         self._require_number(servo, "up_angle", section)
         self._require_number(servo, "default_settle_time", section, minimum=0)
@@ -388,6 +421,7 @@ steps_per_rev = 200
 step_delay = 0.005
 fast_delay = 0.001
 default_turn_seconds = 3.0
+default_degrees = 190.0
 default_clockwise = true
 
 [dc_motor]
@@ -407,6 +441,11 @@ max_angle = 180
 min_pulse_width = 0.0005
 max_pulse_width = 0.0025
 frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
 down_angle = 105
 up_angle = 45
 default_settle_time = 0.4
@@ -420,6 +459,11 @@ max_angle = 180
 min_pulse_width = 0.0005
 max_pulse_width = 0.0025
 frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
 down_angle = 105
 up_angle = 0
 default_settle_time = 0.4
@@ -433,6 +477,11 @@ max_angle = 180
 min_pulse_width = 0.0005
 max_pulse_width = 0.0025
 frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
 down_angle = 105
 up_angle = 0
 default_settle_time = 0.4
@@ -441,6 +490,8 @@ pin_factory = "pigpio"
 
 [workflow]
 servo_down_pause = 2.0
+wheel_pause = 1.0
+stepper_pause = 1.0
 servo_up_pause = 1.0
 default_pages = 7
 """
