@@ -18,3 +18,6 @@ hardware/find_focus.py
 # Scan output and calibration scratch
 runs/
 focus_tests/
+
+# Local backups taken before editing
+*.bak
