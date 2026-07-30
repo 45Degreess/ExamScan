@@ -4,7 +4,17 @@ A Raspberry Pi-based document scanner that captures high-resolution images of ex
 fixed overhead camera and advances pages automatically. Each scanning run is saved as a folder of
 JPEGs, downloadable as a ZIP.
 
-A page turn is a servo drop, a DC wheel turn, then a servo lift.
+A page turn has five phases:
+
+1. **Drop the arm** onto the page (servo to `down_angle`)
+2. **Spin the DC wheel** to feed the page across
+3. **Turn the stepper** by `motor.default_degrees`
+4. **Lift the arm** clear (servo to `up_angle`)
+5. **Return the stepper** the same distance the other way
+
+Phase 5 means the wheel ends every page turn where it started, so repeated turns can't let it creep
+round. Each boundary has its own configurable pause — `servo_down_pause`, `wheel_pause`,
+`stepper_pause`, `servo_up_pause`.
 
 ## Architecture
 
@@ -73,6 +83,59 @@ which the app reports via `config_restart_required` in `/api/health`.
 
 `workflow.default_pages` (default `7`) sets how many pages an auto-scan captures when the client
 doesn't specify a count. It applies live — no restart needed.
+
+### Page-turn tuning
+
+| Field | Controls |
+|---|---|
+| `motor.default_degrees` | How far the stepper turns per page, and back again |
+| `motor.default_clockwise` | Direction of the outward turn; the return is the opposite |
+| `dc_motor.default_speed` / `default_turn_seconds` | How hard and how long the wheel spins |
+| `dc_motor.default_forward` | Wheel direction |
+| `servos.page_drop.down_angle` / `up_angle` | Where the arm rests down and clear |
+| `workflow.*_pause` | Settling time at each phase boundary |
+
+All apply live. The shipped `config.toml` carries values tuned on the rig, which are gentler than the
+schema defaults — a short 0.35s nudge of the wheel at speed 35 rather than 3 seconds at full tilt.
+
+### A note on the stepper driver
+
+The DRV8825's nENBL is active-low with an internal pulldown, so a released GPIO floats low and leaves
+the coils energised and audibly buzzing when nothing is driving the pin.
+
+**Do not fix this with the Pi's internal pull-up.** It is too weak against the driver's pulldown —
+the divider lands near the DRV8825's logic-high threshold, and an input hovering there can chatter,
+toggling the driver on and off mid-step so the motor vibrates in place instead of rotating. The idle
+buzz is the lesser problem. A proper fix would be an external pull-up strong enough to sit clearly
+above threshold.
+
+### Servo motion profile
+
+Servos ramp toward a target rather than jumping, and slow down near the end so the arm's inertia
+doesn't carry it past the mark. Five fields per servo control it, all applying live:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `step_degrees` | `3.0` | Increment size while still far from the target |
+| `step_delay` | `0.015` | Seconds per step, far from the target |
+| `approach_degrees` | `40.0` | Start slowing this many degrees out |
+| `approach_step_degrees` | `1.0` | Increment size on the final approach |
+| `approach_step_delay` | `0.04` | Seconds per step on the final approach |
+
+Speed is `step_degrees / step_delay`, so slower means a bigger delay, a smaller step, or both. With
+the defaults a 105° move takes roughly 2 seconds. If the arm still overshoots, raise
+`approach_degrees` to start slowing earlier or `approach_step_delay` to crawl the last stretch. Set
+the delays to `0` for the old full-speed behaviour; the step sizes must stay above zero.
+
+### Reversed servos
+
+`min_angle` may be set **greater than** `max_angle` to mirror a servo's rotation — which is what
+`page_clamp_left` does, since the clamps are mirrored hardware and would otherwise open when the
+other closes. `down_angle` and `up_angle` stay the same numbers on both sides, so nothing downstream
+has to know which side it's driving.
+
+Changing this on an already-mounted servo moves where commanded `0` sits physically. Since
+`AngularServo` drives to `0` the moment it's constructed, re-seat the horn before running anything.
 
 ## Setup
 
