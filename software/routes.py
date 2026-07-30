@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 import shutil
 import tempfile
 import zipfile
@@ -38,6 +39,7 @@ from processing import (
     _ocr_printed,
     _ocr_trocr,
     _preprocess_for_ocr,
+    _split_emplid_digits,
 )
 
 router = APIRouter()
@@ -72,6 +74,26 @@ def _extract_cover_fields(canonical: np.ndarray, fields: dict[str, tuple[int, in
             extracted[field] = ""
             crops_b64[field] = ""
             continue
+        if field == "Emplid":
+            digit_crops = _split_emplid_digits(crop)
+            digit_chars = []
+            processed_digits = []
+            for dc in digit_crops:
+                if dc.size == 0:
+                    digit_chars.append("")
+                    continue
+                ocr_input = _preprocess_for_ocr(dc)
+                processed_digits.append(ocr_input)
+                try:
+                    raw = _ocr_trocr(ocr_input)
+                    digits_only = re.sub(r"\D", "", raw)
+                    digit_chars.append(digits_only[:1] if digits_only else "?")
+                except Exception:
+                    digit_chars.append("?")
+            extracted[field] = "".join(digit_chars)
+            crops_b64[field] = _encode_b64(cv2.hconcat(processed_digits)) if processed_digits else ""
+            continue
+
         ocr_input = _preprocess_for_ocr(crop)
         crops_b64[field] = _encode_b64(ocr_input)
         try:

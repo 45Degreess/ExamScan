@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from imutils.perspective import four_point_transform
 
-from constants import A4_WIDTH, A4_HEIGHT
+from constants import A4_WIDTH, A4_HEIGHT, EMPLID_PADDING
 from detection import detect_document
 
 _MODEL_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".model_cache")
@@ -85,6 +85,20 @@ def _get_trocr():
     return _trocr_processor, _trocr_model
 
 
+def _split_emplid_digits(crop: np.ndarray, num_digits: int = 7, padding: int = EMPLID_PADDING) -> list[np.ndarray]:
+    """Evenly split a full Emplid field crop into `num_digits` single-digit
+    sub-crops, trimming `padding` px total at each internal separator line."""
+    h, w = crop.shape[:2]
+    cell_w = w // num_digits
+    digits = []
+    for i in range(num_digits):
+        left = i * cell_w + (padding // 2 if i > 0 else 0)
+        right = (i + 1) * cell_w - (padding // 2 if i < num_digits - 1 else 0)
+        left, right = max(0, left), min(w, right)
+        digits.append(crop[:, left:right] if right > left else crop[:, 0:0])
+    return digits
+
+
 def _preprocess_for_ocr(crop: np.ndarray) -> np.ndarray:
     """Grayscale + adaptive threshold to boost OCR contrast on a field crop."""
     gray = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -102,7 +116,7 @@ def _ocr_trocr(crop: np.ndarray) -> str:
     else:
         pil = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
     pixel_values = processor(pil, return_tensors="pt").pixel_values.to(_get_trocr_device())
-    ids = model.generate(pixel_values, max_length=50, num_beams=5)
+    ids = model.generate(pixel_values, max_length=50, num_beams=1)
     return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
 
