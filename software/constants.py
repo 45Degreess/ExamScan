@@ -23,6 +23,10 @@ COVER_FIELDS: dict[str, tuple[int, int, int, int]] = {
     "number of pages": (130,  701,  733,  241),
 }
 
+# Pixels trimmed from each side of the 6 internal separator lines when
+# splitting COVER_FIELDS["Emplid"] into 7 individual digit crops.
+EMPLID_PADDING = 28
+
 # Placeholder regions for the MCQ answer-sheet layout — calibrate against a
 # real MCQ scan the same way as COVER_FIELDS above before relying on these.
 MCQ_COVER_FIELDS: dict[str, tuple[int, int, int, int]] = {
