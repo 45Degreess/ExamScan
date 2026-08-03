@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import shutil
 import tempfile
@@ -470,6 +471,64 @@ async def demo_exam_folder(
         shutil.rmtree(staging, ignore_errors=True)
 
     return Response(status_code=204)
+
+
+DEMO_RUNS_FILE = Path(__file__).parent / "demo_runs.json"
+
+
+@router.post("/runs")
+async def fetch_runs():
+    """
+    Fetch the current list of run ids from the remote runs API
+    (GET {RUNS_API_BASE_URL}/api/runs), persist it to demo_runs.json, and
+    return it to the caller.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{RUNS_API_BASE_URL}/api/runs")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach runs API: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch runs (status {resp.status_code}).",
+        )
+
+    data = resp.json()
+    DEMO_RUNS_FILE.write_text(resp.text)
+    return JSONResponse(data)
+
+
+@router.get("/runs")
+async def get_stored_runs():
+    """Return the run ids most recently persisted by POST /runs, or an empty list."""
+    if not DEMO_RUNS_FILE.exists():
+        return JSONResponse([])
+    return JSONResponse(json.loads(DEMO_RUNS_FILE.read_text()))
+
+
+@router.get("/runs/{run_id}/archive")
+async def download_run_archive(run_id: str):
+    """
+    Proxy the raw ZIP archive for a run (GET {RUNS_API_BASE_URL}/api/runs/{id}/archive)
+    straight through to the caller, with no processing.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{RUNS_API_BASE_URL}/api/runs/{run_id}/archive")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach runs API: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to download archive for run {run_id} (status {resp.status_code}).",
+        )
+
+    return StreamingResponse(
+        io.BytesIO(resp.content),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=run_{run_id}.zip"},
+    )
 
 
 @router.get("/samples")

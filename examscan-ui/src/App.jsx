@@ -2,6 +2,7 @@ import { useState } from "react";
 import './App.css'
 import DocScanner from "./DocScanner";
 import PdfDemo from "./PdfDemo";
+import ExamscanDemo from "./ExamscanDemo";
 import { palette, font } from "./theme.jsx";
 
 export default function App() {
@@ -36,8 +37,11 @@ export default function App() {
         <button style={tabStyle(tab === "pdf_demo")} onClick={() => setTab("pdf_demo")}>
           PDF Demo
         </button>
+        <button style={tabStyle(tab === "examscan_demo")} onClick={() => setTab("examscan_demo")}>
+          Examscan Demo
+        </button>
       </div>
-      {tab === "scanner" ? <DocScanner /> : <PdfDemo />}
+      {tab === "scanner" ? <DocScanner /> : tab === "pdf_demo" ? <PdfDemo /> : <ExamscanDemo />}
     </div>
   );
 }
