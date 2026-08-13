@@ -39,7 +39,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "step_pin": 21,
         "dir_pin": 20,
         "enable_pin": 16,
-        "steps_per_rev": 200,
+        "steps_per_rev": 1600,
         "step_delay": 0.005,
         "fast_delay": 0.001,
         "default_turn_seconds": 3.0,
@@ -69,6 +69,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "approach_degrees": 40.0,
             "approach_step_degrees": 1.0,
             "approach_step_delay": 0.04,
+            "departure_degrees": 10.0,
+            "departure_step_degrees": 0.5,
+            "departure_step_delay": 0.08,
             "down_angle": 105,
             "up_angle": 45,
             "default_settle_time": 0.4,
@@ -76,24 +79,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "pin_factory": "pigpio",
         },
         "page_clamp_left": {
-            "pin": 18,
-            "min_angle": 0,
-            "max_angle": 180,
-            "min_pulse_width": 0.0005,
-            "max_pulse_width": 0.0025,
-            "frame_width": 0.02,
-            "step_degrees": 3.0,
-            "step_delay": 0.015,
-            "approach_degrees": 40.0,
-            "approach_step_degrees": 1.0,
-            "approach_step_delay": 0.04,
-            "down_angle": 105,
-            "up_angle": 0,
-            "default_settle_time": 0.4,
-            "detach_after_move": True,
-            "pin_factory": "pigpio",
-        },
-        "page_clamp_right": {
             "pin": 19,
             "min_angle": 0,
             "max_angle": 180,
@@ -105,6 +90,30 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "approach_degrees": 40.0,
             "approach_step_degrees": 1.0,
             "approach_step_delay": 0.04,
+            "departure_degrees": 10.0,
+            "departure_step_degrees": 0.5,
+            "departure_step_delay": 0.08,
+            "down_angle": 105,
+            "up_angle": 0,
+            "default_settle_time": 0.4,
+            "detach_after_move": True,
+            "pin_factory": "pigpio",
+        },
+        "page_clamp_right": {
+            "pin": 27,
+            "min_angle": 0,
+            "max_angle": 180,
+            "min_pulse_width": 0.0005,
+            "max_pulse_width": 0.0025,
+            "frame_width": 0.02,
+            "step_degrees": 3.0,
+            "step_delay": 0.015,
+            "approach_degrees": 40.0,
+            "approach_step_degrees": 1.0,
+            "approach_step_delay": 0.04,
+            "departure_degrees": 10.0,
+            "departure_step_degrees": 0.5,
+            "departure_step_delay": 0.08,
             "down_angle": 105,
             "up_angle": 0,
             "default_settle_time": 0.4,
@@ -112,9 +121,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "pin_factory": "pigpio",
         },
     },
+    "fan": {
+        "pin": 18,
+        "frequency_hz": 25000,
+        "min_start_duty_pct": 10,
+        "tach_pin": 17,
+        "tach_pulses_per_rev": 2,
+    },
     "workflow": {
+        "clamp_down_pause": 1.0,
         "servo_down_pause": 2.0,
         "wheel_pause": 1.0,
+        "clamp_up_pause": 0.5,
         "stepper_pause": 1.0,
         "servo_up_pause": 1.0,
         "default_pages": 7,
@@ -127,6 +145,7 @@ LIVE_SECTIONS = {"server", "paths", "workflow"}
 RESTART_FIELDS = {
     "motor": {"step_pin", "dir_pin", "enable_pin"},
     "dc_motor": {"in1_pin", "in2_pin", "enable_pin"},
+    "fan": {"pin", "tach_pin"},
 }
 
 
@@ -230,6 +249,13 @@ class ConfigManager:
             != new_config["dc_motor"]["brake_after_turn"]
         ):
             applied.append("dc_motor.defaults")
+        if (
+            old_config["fan"]["min_start_duty_pct"]
+            != new_config["fan"]["min_start_duty_pct"]
+            or old_config["fan"]["tach_pulses_per_rev"]
+            != new_config["fan"]["tach_pulses_per_rev"]
+        ):
+            applied.append("fan.defaults")
         for name in sorted(set(old_config["servos"]) | set(new_config["servos"])):
             old_servo = old_config["servos"].get(name)
             new_servo = new_config["servos"].get(name)
@@ -293,18 +319,34 @@ class ConfigManager:
         servos = config["servos"]
         if not isinstance(servos, dict):
             raise ConfigError("section [servos] must be a table")
-        if "page_drop" not in servos:
-            raise ConfigError("servos.page_drop is required")
+        # Both are driven by the page turn, so both must exist.
+        for required in ("page_drop", "page_clamp_left"):
+            if required not in servos:
+                raise ConfigError(f"servos.{required} is required")
         for name, servo in servos.items():
             if not isinstance(servo, dict):
                 raise ConfigError(f"servos.{name} must be a table")
             self._validate_servo(name, servo)
 
+        fan = config["fan"]
+        self._require_int(fan, "pin", "fan", minimum=0)
+        # The fan only accepts 12kHz-50kHz; anything outside that either fails to
+        # spin or whines audibly, so reject it here rather than at the hardware.
+        self._require_int(fan, "frequency_hz", "fan", minimum=12000, maximum=50000)
+        self._require_int(fan, "min_start_duty_pct", "fan", minimum=0, maximum=100)
+        self._require_int(fan, "tach_pin", "fan", minimum=0)
+        self._require_int(fan, "tach_pulses_per_rev", "fan", minimum=1)
+
         workflow = config["workflow"]
-        self._require_number(workflow, "servo_down_pause", "workflow", minimum=0)
-        self._require_number(workflow, "wheel_pause", "workflow", minimum=0)
-        self._require_number(workflow, "stepper_pause", "workflow", minimum=0)
-        self._require_number(workflow, "servo_up_pause", "workflow", minimum=0)
+        for pause in (
+            "clamp_down_pause",
+            "servo_down_pause",
+            "wheel_pause",
+            "clamp_up_pause",
+            "stepper_pause",
+            "servo_up_pause",
+        ):
+            self._require_number(workflow, pause, "workflow", minimum=0)
         self._require_int(workflow, "default_pages", "workflow", minimum=1)
 
     def _require_str(self, section: dict[str, Any], key: str, name: str) -> None:
@@ -357,9 +399,12 @@ class ConfigManager:
         self._require_number(servo, "approach_degrees", section, minimum=0)
         self._require_number(servo, "approach_step_degrees", section, minimum=0)
         self._require_number(servo, "approach_step_delay", section, minimum=0)
+        self._require_number(servo, "departure_degrees", section, minimum=0)
+        self._require_number(servo, "departure_step_degrees", section, minimum=0)
+        self._require_number(servo, "departure_step_delay", section, minimum=0)
         # Strictly positive, or the ramp loop in ServoMotor._steps would never
         # close the gap. Set the delays to 0 for full speed instead.
-        for key in ("step_degrees", "approach_step_degrees"):
+        for key in ("step_degrees", "approach_step_degrees", "departure_step_degrees"):
             if servo[key] <= 0:
                 raise ConfigError(f"{section}.{key} must be greater than 0")
         self._require_number(servo, "down_angle", section)
@@ -417,7 +462,7 @@ capture_restart_delay = 0.2
 step_pin = 21
 dir_pin = 20
 enable_pin = 16
-steps_per_rev = 200
+steps_per_rev = 1600
 step_delay = 0.005
 fast_delay = 0.001
 default_turn_seconds = 3.0
@@ -446,6 +491,9 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
 down_angle = 105
 up_angle = 45
 default_settle_time = 0.4
@@ -453,24 +501,6 @@ detach_after_move = true
 pin_factory = "pigpio"
 
 [servos.page_clamp_left]
-pin = 18
-min_angle = 0
-max_angle = 180
-min_pulse_width = 0.0005
-max_pulse_width = 0.0025
-frame_width = 0.02
-step_degrees = 3.0
-step_delay = 0.015
-approach_degrees = 40.0
-approach_step_degrees = 1.0
-approach_step_delay = 0.04
-down_angle = 105
-up_angle = 0
-default_settle_time = 0.4
-detach_after_move = true
-pin_factory = "pigpio"
-
-[servos.page_clamp_right]
 pin = 19
 min_angle = 0
 max_angle = 180
@@ -482,15 +512,48 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
 down_angle = 105
 up_angle = 0
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
+[servos.page_clamp_right]
+pin = 27
+min_angle = 0
+max_angle = 180
+min_pulse_width = 0.0005
+max_pulse_width = 0.0025
+frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
+down_angle = 105
+up_angle = 0
+default_settle_time = 0.4
+detach_after_move = true
+pin_factory = "pigpio"
+
+[fan]
+pin = 18
+frequency_hz = 25000
+min_start_duty_pct = 10
+tach_pin = 17
+tach_pulses_per_rev = 2
+
 [workflow]
+clamp_down_pause = 1.0
 servo_down_pause = 2.0
 wheel_pause = 1.0
+clamp_up_pause = 0.5
 stepper_pause = 1.0
 servo_up_pause = 1.0
 default_pages = 7

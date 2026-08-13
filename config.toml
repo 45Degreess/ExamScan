@@ -24,20 +24,23 @@ capture_restart_delay = 0.2
 step_pin = 21
 dir_pin = 20
 enable_pin = 16
-steps_per_rev = 200
-step_delay = 0.005
+# Step pulses per revolution, not full steps: 200 full steps x 8 microsteps.
+# The TMC2209 defaults to 1/8 microstepping with MS1/MS2 unconnected, where the
+# DRV8825 it replaced defaulted to full steps.
+steps_per_rev = 1600
+step_delay = 0.002
 fast_delay = 0.001
 default_turn_seconds = 3.0
 default_degrees = 190.0
-default_clockwise = false
+default_clockwise = true
 
 [dc_motor]
 in1_pin = 23
 in2_pin = 24
 enable_pin = 25
 pwm_freq = 100
-default_speed = 50
-default_turn_seconds = 0.3
+default_speed = 60
+default_turn_seconds = 0.5
 default_forward = false
 brake_after_turn = false
 
@@ -53,6 +56,9 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
 down_angle = 95
 up_angle = 0
 default_settle_time = 0.4
@@ -60,7 +66,7 @@ detach_after_move = true
 pin_factory = "pigpio"
 
 [servos.page_clamp_right]
-pin = 18
+pin = 27
 min_angle = 0
 max_angle = 180
 min_pulse_width = 0.0005
@@ -71,6 +77,9 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
 down_angle = 90
 up_angle = 0
 default_settle_time = 0.4
@@ -89,15 +98,30 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
 down_angle = 73
 up_angle = 0
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
+[fan]
+pin = 18
+frequency_hz = 25000
+min_start_duty_pct = 10
+tach_pin = 17
+tach_pulses_per_rev = 2
+
 [workflow]
+# Pauses between the page-turn phases: drop clamp, drop arm, spin wheel,
+# stepper out (first half), lift clamp, stepper out (second half), lift arm,
+# return stepper.
+clamp_down_pause = 1.0
 servo_down_pause = 1.0
 wheel_pause = 1.0
+clamp_up_pause = 0.5
 stepper_pause = 1.0
 servo_up_pause = 1.0
 default_pages = 7

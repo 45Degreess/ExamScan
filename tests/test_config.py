@@ -31,8 +31,8 @@ def test_missing_page_drop_servo_is_rejected(config_manager, config):
 
 def test_valid_named_servo_config_loads(config):
     assert config["servos"]["page_drop"]["pin"] == 12
-    assert config["servos"]["page_clamp_left"]["pin"] == 18
-    assert config["servos"]["page_clamp_right"]["pin"] == 19
+    assert config["servos"]["page_clamp_left"]["pin"] == 19
+    assert config["servos"]["page_clamp_right"]["pin"] == 27
     assert config["servos"]["page_drop"]["pin_factory"] == "pigpio"
 
 
@@ -45,6 +45,8 @@ def test_valid_named_servo_config_loads(config):
         ("dc_motor", "in1_pin", 17),
         ("dc_motor", "in2_pin", 27),
         ("dc_motor", "enable_pin", 18),
+        ("fan", "pin", 13),
+        ("fan", "tach_pin", 22),
     ],
 )
 def test_pin_changes_require_restart(config_manager, config, section, field, value):
@@ -77,6 +79,7 @@ def test_new_servo_pin_requires_restart(config_manager, config):
         ("workflow", "servo_down_pause", 0.5),
         ("motor", "step_delay", 0.002),
         ("dc_motor", "default_speed", 75),
+        ("fan", "min_start_duty_pct", 15),
     ],
 )
 def test_non_pin_changes_do_not_require_restart(config_manager, config, section, field, value):
@@ -105,6 +108,24 @@ def test_servo_live_changes_are_reported(config_manager, config):
     changed["servos"]["page_drop"]["down_angle"] = 90
 
     assert config_manager.applied_live_sections(config, changed) == ["servos.page_drop"]
+
+
+@pytest.mark.parametrize("frequency", [11999, 50001])
+def test_fan_frequency_outside_supported_range_is_rejected(
+    config_manager, config, frequency
+):
+    changed = deepcopy(config)
+    changed["fan"]["frequency_hz"] = frequency
+
+    with pytest.raises(ConfigError, match="fan.frequency_hz"):
+        config_manager._validate(changed)
+
+
+def test_fan_default_changes_are_reported_live(config_manager, config):
+    changed = deepcopy(config)
+    changed["fan"]["min_start_duty_pct"] = 15
+
+    assert config_manager.applied_live_sections(config, changed) == ["fan.defaults"]
 
 
 def test_valid_upload_creates_backup(config_manager, config_dict):
