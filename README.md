@@ -4,17 +4,25 @@ A Raspberry Pi-based document scanner that captures high-resolution images of ex
 fixed overhead camera and advances pages automatically. Each scanning run is saved as a folder of
 JPEGs, downloadable as a ZIP.
 
-A page turn has five phases:
+A page turn has eight phases:
 
-1. **Drop the arm** onto the page (servo to `down_angle`)
-2. **Spin the DC wheel** to feed the page across
-3. **Turn the stepper** by `motor.default_degrees`
-4. **Lift the arm** clear (servo to `up_angle`)
-5. **Return the stepper** the same distance the other way
+1. **Drop the clamp** onto the stack (`page_clamp_left` to its `down_angle`)
+2. **Drop the arm** onto the page (`page_drop` to its `down_angle`)
+3. **Spin the DC wheel** to feed the page across
+4. **Turn the stepper** halfway through `motor.default_degrees`
+5. **Lift the clamp** clear
+6. **Turn the stepper** the rest of the way
+7. **Lift the arm** clear
+8. **Return the stepper** the full distance the other way
 
-Phase 5 means the wheel ends every page turn where it started, so repeated turns can't let it creep
-round. Each boundary has its own configurable pause — `servo_down_pause`, `wheel_pause`,
-`stepper_pause`, `servo_up_pause`.
+The clamp lifts mid-run, which is why phases 4 and 6 are two halves of one movement. Phase 8 means
+the wheel ends every page turn where it started, so repeated turns can't let it creep round.
+
+The outward run is split by **step count, not degrees** — halving the degrees and rounding twice can
+land a step away from the single return move, leaving the wheel slightly short on every page.
+
+Each boundary has its own configurable pause: `clamp_down_pause`, `servo_down_pause`, `wheel_pause`,
+`clamp_up_pause`, `stepper_pause`, `servo_up_pause`.
 
 ## Architecture
 
@@ -32,7 +40,8 @@ the stream and drives capture and page turns over the API. See [API](#api) for t
 | Camera | Raspberry Pi Camera Module 3 (IMX708) |
 | Page wheel | DC motor, driven via PWM |
 | Page drop / clamps | Servos |
-| Stepper (unused) | NEMA 17 SM24240 with DRV8825 — driver retained, not in the current workflow |
+| Fan | Waveshare FAN-4020-PWM-5V, 25 kHz hardware PWM |
+| Stepper | NEMA 17 SM24240 with MKS TMC2209 V2.0, driven as step/dir |
 
 ### Wiring
 
@@ -42,8 +51,15 @@ Pins are defined in `config.toml` and can be changed there; a pin change needs a
 |---|---|
 | DC motor IN1 / IN2 / ENABLE | 23 / 24 / 25 |
 | Servo — page drop | 12 |
-| Servo — page clamp left / right | 18 / 19 |
+| Servo — page clamp left / right | 19 / 27 |
 | Stepper STEP / DIR / ENABLE | 21 / 20 / 16 |
+| Stepper DIAG / UART TX / RX | 26 / 14 / 15 (wired, unused — see below) |
+| Fan PWM / tach | 18 / 17 |
+
+On the fan, the **yellow** lead is PWM control — not blue, which is what the usual 4-pin PC fan
+colour convention would suggest. Red is +5V, black is ground, and blue is the tach output. Driving
+the wrong lead leaves the fan at full speed, since it reads an unconnected control line as a
+request for 100%.
 
 Camera is mounted approximately 43 cm above the scanning surface with a fixed lens position.
 
@@ -53,6 +69,7 @@ Camera is mounted approximately 43 cm above the scanning surface with a fixed le
 ExamScan/
 ├── hardware/
 │   ├── camera.py       # Camera streaming and capture
+│   ├── fan.py          # PWM fan and tachometer (raw pigpio hardware PWM)
 │   ├── motor.py        # DC motor (page wheel) and stepper motor
 │   └── servo.py        # Servo control (page drop, clamps)
 ├── tests/              # Test suite (runs without hardware)
@@ -93,26 +110,73 @@ doesn't specify a count. It applies live — no restart needed.
 | `dc_motor.default_speed` / `default_turn_seconds` | How hard and how long the wheel spins |
 | `dc_motor.default_forward` | Wheel direction |
 | `servos.page_drop.down_angle` / `up_angle` | Where the arm rests down and clear |
+| `fan.min_start_duty_pct` | Floor applied to any non-zero duty so the fan actually spins up |
+| `fan.tach_pulses_per_rev` | Tach pulses per revolution, used to convert edges to RPM |
 | `workflow.*_pause` | Settling time at each phase boundary |
 
 All apply live. The shipped `config.toml` carries values tuned on the rig, which are gentler than the
 schema defaults — a short 0.35s nudge of the wheel at speed 35 rather than 3 seconds at full tilt.
 
-### A note on the stepper driver
+### Stepper driver
 
-The DRV8825's nENBL is active-low with an internal pulldown, so a released GPIO floats low and leaves
-the coils energised and audibly buzzing when nothing is driving the pin.
+The stepper runs on an MKS TMC2209 V2.0, which replaced a DRV8825. Its EN input is active-low, so a
+released or floating pin can leave the coils energised — `StepperMotor.cleanup()` drives EN high
+before releasing the pins, and `hardware/test_stepper.py` has a `RELEASE_PINS` switch for checking
+that on the bench.
 
-**Do not fix this with the Pi's internal pull-up.** It is too weak against the driver's pulldown —
-the divider lands near the DRV8825's logic-high threshold, and an input hovering there can chatter,
-toggling the driver on and off mid-step so the motor vibrates in place instead of rotating. The idle
-buzz is the lesser problem. A proper fix would be an external pull-up strong enough to sit clearly
-above threshold.
+**MS1 and MS2 are tied to GND**, which selects 1/8 microstepping. That is why `steps_per_rev` is
+1600 rather than 200: it counts step pulses, not full steps. The DRV8825 defaulted to full steps
+with its mode pins low, so this had to change with the driver.
+
+The driver is used purely as step/dir. Its UART and StallGuard features are not used — see below.
+
+#### StallGuard: wiring notes, kept for reference
+
+Stall detection was built and then removed. It worked, in that the driver reported load over UART and
+DIAG did eventually assert, but the gap between a healthy move and a stalled one was too narrow on
+this mechanism to act on: unloaded readings sat around 88-108 and a hand-loaded shaft only fell to
+around 84, so any threshold that caught a real jam also stopped healthy moves. The wiring is left in
+place and recorded here in case it is worth revisiting.
+
+| Signal | Pi pin | Notes |
+|---|---|---|
+| PDN/UART | GPIO14 TX, GPIO15 RX | **Both to the same pad** — the `R8 CONNECT = UART` one, fourth up from `En`. 1 kΩ in series on TX only; RX taps the junction |
+| DIAG | GPIO26 | Asserts on stall |
+| MS1 / MS2 | GND | Sets UART address 0 and 1/8 microstepping |
+
+What cost the most time, in case it comes up again:
+
+- On this board **R8 selects which pad is bonded to the chip's PDN_UART**, so the other pad is inert.
+  RX on the wrong one means writes land and replies never come — which looks exactly like a dead
+  driver while step/dir keeps working normally.
+- **MS1/MS2 must not float.** They set the UART address, and a floating pin settles at no stable
+  level, so the driver answers on no address at all.
+- The **`pytmcstepper`** library derives its read timeout as `20000 // baudrate`, which floors to
+  **0** at 115200 and leaves pyserial non-blocking, so every read returns empty. It also calls
+  `sys.exit()` when the port cannot be opened. Talking to the chip directly avoided both.
+- **StallGuard4 needs StealthChop** (unlike StallGuard2 on other TMC parts), is inactive below a
+  speed gate set by `TCOOLTHRS`, and its reading climbs for the first fraction of a second of motion
+  — so a standing start reads exactly like a stall.
+
+#### Freeing the UART
+
+The TMC2209's UART needs GPIO14/15, which on a stock Pi carry a login console on the mini-UART while
+Bluetooth holds the better PL011. Mini-UART baud follows the VPU core clock and drifts, which is
+poor for register traffic. The fix, already applied here, is:
+
+- `console=serial0,115200` removed from `/boot/firmware/cmdline.txt`
+- `dtoverlay=disable-bt` added to `/boot/firmware/config.txt`, moving the PL011 onto GPIO14/15
+- `sudo systemctl mask serial-getty@ttyS0.service`
+
+Both boot files were backed up alongside themselves as `*.examscan.bak`. This needed a reboot, after
+which `ls -l /dev/serial0` points at `ttyAMA0` rather than `ttyS0`. Bluetooth is given up in
+exchange. Nothing in the project uses the serial port now, so this can be reverted if Bluetooth is
+wanted back.
 
 ### Servo motion profile
 
 Servos ramp toward a target rather than jumping, and slow down near the end so the arm's inertia
-doesn't carry it past the mark. Five fields per servo control it, all applying live:
+doesn't carry it past the mark. Eight fields per servo control it, all applying live:
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -121,11 +185,21 @@ doesn't carry it past the mark. Five fields per servo control it, all applying l
 | `approach_degrees` | `40.0` | Start slowing this many degrees out |
 | `approach_step_degrees` | `1.0` | Increment size on the final approach |
 | `approach_step_delay` | `0.04` | Seconds per step on the final approach |
+| `departure_degrees` | `10.0` | Crawl for this many degrees after leaving the start |
+| `departure_step_degrees` | `0.5` | Increment size while departing |
+| `departure_step_delay` | `0.08` | Seconds per step while departing |
 
 Speed is `step_degrees / step_delay`, so slower means a bigger delay, a smaller step, or both. With
 the defaults a 105° move takes roughly 2 seconds. If the arm still overshoots, raise
 `approach_degrees` to start slowing earlier or `approach_step_delay` to crawl the last stretch. Set
 the delays to `0` for the old full-speed behaviour; the step sizes must stay above zero.
+
+The `departure_*` fields mirror the approach ones at the other end of the move, for peeling the arm
+off a page slowly instead of flicking it. They only take effect when a caller passes
+`slow_start=True` to `set_angle()`, so every move is unaffected by default — nothing in the
+page-turn uses it today, and it is exercised from `hardware/test_servo.py` via `SLOW_START_ANGLES`.
+Where a move is shorter than `departure_degrees` the departure profile applies throughout, so it
+never speeds up partway.
 
 ### Reversed servos
 
@@ -136,6 +210,37 @@ has to know which side it's driving.
 
 Changing this on an already-mounted servo moves where commanded `0` sits physically. Since
 `AngularServo` drives to `0` the moment it's constructed, re-seat the horn before running anything.
+
+### Fan
+
+The fan needs a 25 kHz PWM carrier, which is far above what the pigpio daemon's software PWM can
+hold steady. `hardware/fan.py` therefore talks to `pigpio` directly and calls `hardware_PWM()` on
+GPIO18 — one of the two pins wired to the SoC's real PWM peripheral — rather than going through
+`gpiozero` like the servos and DC motor do. This is why `page_clamp_right` sits on GPIO27: it was
+moved off 18 to free the hardware PWM channel, and being a 50 Hz servo it does not care which pin
+it lands on.
+
+Duty cycle maps to roughly 1800 RPM at 25%, 3700 at 50%, 5600 at 75%, and 7500 at 100%. Below about
+10% the fan cannot break static friction and just sits stalled, so `set_duty()` floors any non-zero
+request at `fan.min_start_duty_pct`. Zero still means off.
+
+The fan reads a disconnected PWM line as a request for **full speed**, not zero — a failsafe for
+cooling use, which is the opposite of what this rig wants. `FanController` drives the pin low as
+soon as it connects and `cleanup()` always commands 0% before dropping the pigpio connection, so a
+normal exit never leaves it spinning. Only a pulled wire or a dead `pigpiod` can trigger the
+failsafe.
+
+`read_rpm()` reports the average speed since the previous call rather than an instantaneous figure,
+so polling it slowly gives a steadier number at the cost of lagging a speed change by up to one
+polling interval. The tach line is an open-collector output driven low twice per revolution, so the
+pin is configured with a pull-up — without it the level never rises and the edge count stays at
+zero. If a fan reports double or half the expected speed, correct `fan.tach_pulses_per_rev` rather
+than scaling the result.
+
+`hardware/test_fan.py` drives all of this interactively: number keys and space step through the
+speeds, `q` exits, and measured RPM prints every few seconds.
+
+Requires the pigpio daemon (see [Setup](#2-enable-the-pigpio-daemon)).
 
 ## Setup
 
@@ -149,7 +254,31 @@ Changing this on an already-mounted servo moves where commanded `0` sits physica
 sudo apt install libcap-dev liblgpio-dev swig -y
 ```
 
-### 2. Install uv
+### 2. Enable the pigpio daemon
+
+The servos and the fan both drive their pins through `pigpiod`, so it has to be running before the
+backend starts. Check whether it is already up:
+
+```bash
+systemctl status pigpiod
+```
+
+If the service is missing, install it — note that on this rig `pigpiod` lives in `/usr/local/bin`
+from a source build rather than the apt package, so check `which pigpiod` before installing over it:
+
+```bash
+sudo apt install pigpio -y
+```
+
+Then enable it, which also brings it back after a reboot:
+
+```bash
+sudo systemctl enable --now pigpiod
+```
+
+`pigs hwver` should print a hardware revision number rather than an error once the daemon is up.
+
+### 3. Install uv
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -160,13 +289,13 @@ Restart your terminal after installing, or run:
 source $HOME/.local/bin/env
 ```
 
-### 3. Create the virtual environment
+### 4. Create the virtual environment
 
 ```bash
 uv venv --system-site-packages
 ```
 
-### 4. Install Python dependencies
+### 5. Install Python dependencies
 
 ```bash
 uv sync
