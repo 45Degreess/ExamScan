@@ -78,6 +78,9 @@ def servo_config(**overrides):
         "approach_degrees": 40.0,
         "approach_step_degrees": 1.0,
         "approach_step_delay": 0.04,
+        "departure_degrees": 10.0,
+        "departure_step_degrees": 0.5,
+        "departure_step_delay": 0.08,
         "down_angle": 105,
         "up_angle": 45,
         "default_settle_time": 0.4,
@@ -96,6 +99,9 @@ def ramp_config(**overrides):
         approach_degrees=20.0,
         approach_step_degrees=5.0,
         approach_step_delay=0.05,
+        departure_degrees=20.0,
+        departure_step_degrees=2.0,
+        departure_step_delay=0.1,
         **overrides,
     )
 
@@ -151,6 +157,52 @@ def test_ramp_slows_on_the_final_approach(monkeypatch):
     # The boundary is inclusive, so the step out of 80 is already a slow one.
     assert device.angles == [10, 20, 30, 40, 50, 60, 70, 80, 85, 90, 95, 100]
     assert sleeps == [0.01] * 8 + [0.05] * 4 + [0.2]
+
+
+def test_ramp_crawls_out_of_the_start_when_asked(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    sleeps = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    servo.set_angle(100, settle_time=0.2, slow_start=True)
+
+    # Fine 2-degree steps for the first 20 degrees, then the usual coarse run
+    # and the slow final approach.
+    assert device.angles == [
+        2, 4, 6, 8, 10, 12, 14, 16, 18, 20,
+        30, 40, 50, 60, 70, 80,
+        85, 90, 95, 100,
+    ]
+    assert sleeps == [0.1] * 10 + [0.01] * 6 + [0.05] * 4 + [0.2]
+
+
+def test_ramp_does_not_crawl_out_of_the_start_by_default(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    servo.set_angle(100, settle_time=0.2)
+
+    # Same move without the flag leaves at full speed.
+    assert device.angles == [10, 20, 30, 40, 50, 60, 70, 80, 85, 90, 95, 100]
+
+
+def test_short_move_crawls_throughout(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    sleeps = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    servo.set_angle(6, settle_time=0.2, slow_start=True)
+
+    # Shorter than departure_degrees, so it never picks up speed - departure
+    # takes precedence over the approach profile where the two overlap.
+    assert device.angles == [2, 4, 6]
+    assert sleeps == [0.1] * 3 + [0.2]
 
 
 def test_ramp_handles_a_downward_move(monkeypatch):
