@@ -140,20 +140,25 @@ class StepperMotor:
             fast_delay=config["fast_delay"],
         )
 
+    @property
+    def steps_per_rev(self):
+        return self._steps_per_rev
+
     def enable(self):
-        GPIO.output(self._enable_pin, GPIO.LOW)  
+        GPIO.output(self._enable_pin, GPIO.LOW)
 
     def disable(self):
         GPIO.output(self._enable_pin, GPIO.HIGH)
 
-    def move_steps(self, steps, clockwise=True):
+    def move_steps(self, steps, clockwise=True, step_delay=None):
+        delay = self._step_delay if step_delay is None else step_delay
         GPIO.output(self._dir_pin, GPIO.LOW if clockwise else GPIO.HIGH)
         self.enable()
         for _ in range(steps):
             GPIO.output(self._step_pin, GPIO.HIGH)
-            time.sleep(self._step_delay)
+            time.sleep(delay)
             GPIO.output(self._step_pin, GPIO.LOW)
-            time.sleep(self._step_delay)
+            time.sleep(delay)
         self.disable()
 
     def move_degrees(self, degrees, clockwise=True):
