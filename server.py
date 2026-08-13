@@ -309,16 +309,36 @@ class ExamScanServer(ThreadingHTTPServer):
             raise
 
     def page_turn(self):
-        """Drop the arm, spin the wheel, turn the stepper, lift, return the stepper.
+        """Clamp down, arm down, wheel, stepper out, clamp up, arm up, stepper back.
 
-        The stepper goes back the way it came once the arm is clear, so the
-        wheel ends every page turn where it started and cannot creep round.
+        The clamp lifts partway through the stepper's outward run, so that run
+        is split into two halves with the lift between them. The stepper then
+        goes all the way back once the arm is clear, so the wheel ends every
+        page turn where it started and cannot creep round.
         """
         servo_config = self.config["servos"]["page_drop"]
+        clamp_config = self.config["servos"]["page_clamp_left"]
         workflow = self.config["workflow"]
         dc_motor_config = self.config["dc_motor"]
         motor_config = self.config["motor"]
         page_drop_servo = self.servos.page_drop
+        clamp_servo = self.servos.page_clamp_left
+
+        # Split in steps, not degrees: two half-degree moves can round to one
+        # step more or less than the single full move, which would leave the
+        # wheel short of where it started. Splitting the step count is exact.
+        total_steps = round(
+            motor_config["steps_per_rev"] * motor_config["default_degrees"] / 360
+        )
+        first_steps = total_steps // 2
+        second_steps = total_steps - first_steps
+        clockwise = motor_config["default_clockwise"]
+
+        clamp_servo.set_angle(
+            clamp_config["down_angle"],
+            settle_time=clamp_config["default_settle_time"],
+        )
+        time.sleep(workflow["clamp_down_pause"])
 
         page_drop_servo.set_angle(
             servo_config["down_angle"],
@@ -334,10 +354,15 @@ class ExamScanServer(ThreadingHTTPServer):
         )
         time.sleep(workflow["wheel_pause"])
 
-        self.stepper.move_degrees(
-            motor_config["default_degrees"],
-            clockwise=motor_config["default_clockwise"],
+        self.stepper.move_steps(first_steps, clockwise=clockwise)
+
+        clamp_servo.set_angle(
+            clamp_config["up_angle"],
+            settle_time=clamp_config["default_settle_time"],
         )
+        time.sleep(workflow["clamp_up_pause"])
+
+        self.stepper.move_steps(second_steps, clockwise=clockwise)
         time.sleep(workflow["stepper_pause"])
 
         page_drop_servo.set_angle(
@@ -346,10 +371,7 @@ class ExamScanServer(ThreadingHTTPServer):
         )
         time.sleep(workflow["servo_up_pause"])
 
-        self.stepper.move_degrees(
-            motor_config["default_degrees"],
-            clockwise=not motor_config["default_clockwise"],
-        )
+        self.stepper.move_steps(total_steps, clockwise=not clockwise)
 
     def scan_step(self, run_id):
         manifest = self.capture_page(run_id)

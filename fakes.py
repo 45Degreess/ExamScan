@@ -112,6 +112,11 @@ class FakeStepperMotor:
         if self.delay:
             time.sleep(degrees / 360.0)
 
+    def move_steps(self, steps, clockwise=True):
+        self.moves.append({"steps": steps, "clockwise": clockwise})
+        if self.delay:
+            time.sleep(steps / 200.0)
+
     def disable(self):
         pass
 
@@ -133,6 +138,7 @@ class FakeServo:
 class FakeServoController:
     def __init__(self, delay=False):
         self.page_drop = FakeServo(delay=delay)
+        self.page_clamp_left = FakeServo(delay=delay)
         self.reloads = []
 
     def reload_config(self, old_config, new_config):

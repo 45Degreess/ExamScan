@@ -47,7 +47,14 @@ def config_dict(tmp_path):
     # page_turn() sleeps these for real, and they exist to pace a mechanism no
     # test is driving. Left at their defaults, a multi-page auto-scan outruns the
     # client timeout.
-    for pause in ("servo_down_pause", "wheel_pause", "stepper_pause", "servo_up_pause"):
+    for pause in (
+        "clamp_down_pause",
+        "servo_down_pause",
+        "wheel_pause",
+        "clamp_up_pause",
+        "stepper_pause",
+        "servo_up_pause",
+    ):
         config["workflow"][pause] = 0.0
     return config
 

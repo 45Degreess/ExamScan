@@ -237,7 +237,7 @@ def test_auto_scan_without_body_uses_configured_default(api_client, api_server):
     assert completed.json["page_count"] == 2
 
 
-def test_page_turn_runs_all_five_phases(api_client, api_server):
+def test_page_turn_drives_every_device(api_client, api_server):
     run_id = api_client.post("/api/runs").json["run_id"]
 
     response = api_client.post(f"/api/runs/{run_id}/page-turn")
@@ -245,26 +245,42 @@ def test_page_turn_runs_all_five_phases(api_client, api_server):
     assert response.status == 200
     assert response.json == {"ok": True, "run_id": run_id}
 
-    # Arm down then up.
-    assert [item["degrees"] for item in api_server.servos.page_drop.angles] == [105, 45]
+    # Clamp down then up, arm down then up.
+    assert [i["degrees"] for i in api_server.servos.page_clamp_left.angles] == [105, 0]
+    assert [i["degrees"] for i in api_server.servos.page_drop.angles] == [105, 45]
     # One wheel spin.
     assert api_server.wheel_motor.turns == [
         {"seconds": 3.0, "speed": 100, "forward": True, "brake": False}
     ]
-    # Stepper out and back: same travel, opposite directions, so the wheel ends
-    # where it started.
-    out, back = api_server.stepper.moves
-    assert out["degrees"] == back["degrees"] == 190.0
-    assert out["clockwise"] is not back["clockwise"]
 
 
-def test_page_turn_returns_the_stepper_after_the_arm_lifts(api_client, api_server):
-    """Phase 5 must come after the lift, not before it."""
+def test_page_turn_splits_the_outward_run_and_returns_exactly(api_client, api_server):
+    """The two outward halves must sum to the single return move.
+
+    Splitting in steps rather than degrees is what guarantees this - halving the
+    degrees and rounding twice can land a step off, leaving the wheel short of
+    where it started on every page.
+    """
+    run_id = api_client.post("/api/runs").json["run_id"]
+    api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    first, second, back = api_server.stepper.moves
+
+    assert first["steps"] + second["steps"] == back["steps"]
+    assert first["clockwise"] is second["clockwise"]
+    assert back["clockwise"] is not first["clockwise"]
+
+
+def test_page_turn_order_lifts_the_clamp_mid_run(api_client, api_server):
+    """Clamp drops before the arm and lifts between the two stepper halves."""
     order = []
-    api_server.servos.page_drop.set_angle = lambda degrees, settle_time=None: order.append(
-        f"servo:{degrees}"
+    api_server.servos.page_clamp_left.set_angle = lambda degrees, settle_time=None: (
+        order.append(f"clamp:{degrees}")
     )
-    api_server.stepper.move_degrees = lambda degrees, clockwise=True: order.append(
+    api_server.servos.page_drop.set_angle = lambda degrees, settle_time=None: (
+        order.append(f"arm:{degrees}")
+    )
+    api_server.stepper.move_steps = lambda steps, clockwise=True: order.append(
         f"stepper:{'cw' if clockwise else 'ccw'}"
     )
     api_server.wheel_motor.run_for = lambda *a, **k: order.append("wheel")
@@ -273,10 +289,13 @@ def test_page_turn_returns_the_stepper_after_the_arm_lifts(api_client, api_serve
     api_client.post(f"/api/runs/{run_id}/page-turn")
 
     assert order == [
-        "servo:105",
+        "clamp:105",
+        "arm:105",
         "wheel",
         "stepper:cw",
-        "servo:45",
+        "clamp:0",
+        "stepper:cw",
+        "arm:45",
         "stepper:ccw",
     ]
 
