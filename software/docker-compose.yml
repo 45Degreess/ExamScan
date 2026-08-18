@@ -1,0 +1,16 @@
+services:
+  mysql:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-examscan}
+      MYSQL_USER: ${DB_USER:-examscan}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-examscan}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-examscan_root}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - examscan_mysql_data:/var/lib/mysql
+
+volumes:
+  examscan_mysql_data:

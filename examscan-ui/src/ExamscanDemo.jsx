@@ -10,6 +10,13 @@ function runIdOf(run) {
   return String(run.id ?? run.run_id ?? run.runId ?? JSON.stringify(run));
 }
 
+/* Response body may be a bare array or an object like { runs: [...] }. */
+function runsFromPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (payload && Array.isArray(payload.runs)) return payload.runs;
+  return [];
+}
+
 export default function ExamscanDemo() {
   const [runs, setRuns] = useState([]);
   const [loadingRuns, setLoadingRuns] = useState(false);
@@ -23,7 +30,7 @@ export default function ExamscanDemo() {
     (async () => {
       try {
         const res = await fetch(`${API_BASE}/runs`);
-        if (res.ok) setRuns(await res.json());
+        if (res.ok) setRuns(runsFromPayload(await res.json()));
       } catch {
         /* ignore — no persisted runs yet */
       }
@@ -39,7 +46,7 @@ export default function ExamscanDemo() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || "Failed to fetch runs");
       }
-      setRuns(await res.json());
+      setRuns(runsFromPayload(await res.json()));
     } catch (e) {
       setRunsError(e.message);
     } finally {

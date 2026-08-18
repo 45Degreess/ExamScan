@@ -17,8 +17,12 @@ from PIL import Image as PILImage
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi import Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
+
+import db
 
 SAMPLE_DIR = Path(__file__).parent / "sample_images"
+STORAGE_ROOT = Path(__file__).parent / "storage"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 from constants import (
@@ -94,6 +98,15 @@ def _extract_cover_fields(canonical: np.ndarray, fields: dict[str, tuple[int, in
             extracted[field] = "".join(digit_chars)
             crops_b64[field] = _encode_b64(cv2.hconcat(processed_digits)) if processed_digits else ""
             continue
+        if field == "Course Code":
+            ocr_input = _preprocess_for_ocr(crop)
+            crops_b64[field] = _encode_b64(ocr_input)
+            try:
+                raw = _ocr_trocr(ocr_input)
+                extracted[field] = re.sub(r"[^A-Za-z0-9]", "", raw)
+            except Exception as exc:
+                extracted[field] = f"[OCR error: {exc}]"
+            continue
 
         ocr_input = _preprocess_for_ocr(crop)
         crops_b64[field] = _encode_b64(ocr_input)
@@ -128,30 +141,39 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
     student_info: dict | None = None
     page_paths: list[Path] = []
     page_counter = 0
+    total = len(image_files)
 
-    for img_path in image_files:
+    for index, img_path in enumerate(image_files, start=1):
+        print(f"[{index}/{total}] {img_path.name}: reading image...")
         image = cv2.imread(str(img_path))
         if image is None:
+            print(f"[{index}/{total}] {img_path.name}: skipped (unreadable)")
             continue
 
         qr_found, _qr_data = detect_qr_code(image)
 
         if qr_found:
+            print(f"[{index}/{total}] {img_path.name}: cover page detected, scanning...")
             corners = detect_document(image, method)
             warped = four_point_transform(image, corners.reshape(4, 2))
             warped = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
             scanned = enhance_scan(warped) if enhance else warped
+            print(f"[{index}/{total}] {img_path.name}: running OCR on cover fields...")
             try:
                 extraction = _extract_cover_fields(warped, COVER_FIELDS)
                 student_info = extraction["fields"]
+                print(f"[{index}/{total}] {img_path.name}: OCR done -> {student_info}")
             except Exception as exc:
                 student_info = {"error": str(exc)}
+                print(f"[{index}/{total}] {img_path.name}: OCR failed -> {exc}")
 
             page_counter += 1
             page_path = output_dir / f"page_{page_counter:03d}_cover.png"
             cv2.imwrite(str(page_path), scanned)
             page_paths.append(page_path)
+            print(f"[{index}/{total}] {img_path.name}: saved {page_path.name}")
         else:
+            print(f"[{index}/{total}] {img_path.name}: booklet spread, splitting...")
             corners = detect_document(image, method)
             warped = four_point_transform(image, corners.reshape(4, 2))
             spread = cv2.resize(warped, (A3_WIDTH, A3_HEIGHT), interpolation=cv2.INTER_CUBIC)
@@ -163,7 +185,9 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
                 page_path = output_dir / f"page_{page_counter:03d}.png"
                 cv2.imwrite(str(page_path), page)
                 page_paths.append(page_path)
+                print(f"[{index}/{total}] {img_path.name}: saved {page_path.name}")
 
+    print(f"Writing student_info.txt and combined.pdf for {len(page_paths)} page(s)...")
     info_path = output_dir / "student_info.txt"
     with open(info_path, "w") as f:
         if student_info:
@@ -177,6 +201,7 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
     if pil_images:
         PILImage.init()  # registers the JPEG codec save handler used internally by PDF export
         pil_images[0].save(pdf_path, save_all=True, append_images=pil_images[1:])
+    print(f"Done: {len(page_paths)} page(s) processed -> {output_dir}")
 
     return {
         "output_dir": str(output_dir),
@@ -551,3 +576,91 @@ async def get_sample(filename: str):
     if not file_path.exists() or file_path.suffix.lower() not in _IMAGE_EXTS:
         raise HTTPException(status_code=404, detail="Sample not found")
     return FileResponse(file_path)
+
+
+@router.post("/sessions")
+async def create_session(
+    session_code: str = Form(...),
+    operator_name: str = Form(...),
+    test_date: str = Form(...),
+    course_code: str = Form(...),
+):
+    """
+    Start a scan session (course code, test date, operator) that persists
+    for the lifetime of a scanning run. Booklets are then submitted against
+    this session via POST /sessions/{session_code}/booklets.
+    """
+    try:
+        session_id = await run_in_threadpool(
+            db.create_session, session_code, operator_name, test_date, course_code
+        )
+    except db.DuplicateSessionError:
+        raise HTTPException(status_code=409, detail=f"session_code '{session_code}' already exists.")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="test_date must be in YYYY-MM-DD format.")
+
+    return JSONResponse({"session_id": session_id, "session_code": session_code})
+
+
+@router.post("/sessions/{session_code}/booklets")
+async def add_booklet(
+    session_code: str,
+    folder_path: str = Form(...),
+    method: str = Form(default="colour"),
+    enhance: bool = Form(default=True),
+):
+    """
+    Process one booklet's images (via _process_exam_folder) against an
+    existing scan session, compare the OCR'd course code against the
+    session's declared course code, and persist the PDF + metadata to MySQL.
+
+    Course-code mismatches are stored and flagged (course_code_verified =
+    False), never rejected. A repeat Emplid within the same session is
+    rejected (409) rather than overwritten.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    input_dir = Path(folder_path)
+    if not input_dir.is_dir():
+        raise HTTPException(status_code=400, detail="folder_path is not a valid directory.")
+
+    staging_output = Path(tempfile.mkdtemp(prefix="examscan_booklet_"))
+    try:
+        result = _process_exam_folder(input_dir, staging_output, method, enhance)
+
+        student_info = result["student_info"]
+        emplid = student_info.get("Emplid", "")
+        scanned_course = student_info.get("Course Code", "")
+        verified = scanned_course.strip().upper() == session["course_code"].strip().upper()
+
+        final_dir = STORAGE_ROOT / session_code / (emplid or "unknown")
+
+        booklet_id = await run_in_threadpool(
+            db.insert_booklet,
+            session["id"],
+            emplid,
+            scanned_course,
+            verified,
+            result["num_pages"],
+            str(final_dir / "combined.pdf"),
+        )
+
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        final_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging_output), str(final_dir))
+    except db.DuplicateEmplidError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Emplid '{emplid}' already recorded for session '{session_code}'.",
+        )
+    finally:
+        shutil.rmtree(staging_output, ignore_errors=True)  # no-op once already moved
+
+    return JSONResponse({
+        "booklet_id": booklet_id,
+        "verified": verified,
+        "student_info": student_info,
+    })

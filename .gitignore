@@ -17,3 +17,9 @@ hardware/find_focus.py
 
 # Runtime output from /demo_exam_folder
 software/demo_output/
+
+# Runtime output from POST /sessions/{session_code}/booklets
+software/storage/
+
+# Local MySQL credentials (copy from software/.env.example)
+software/.env

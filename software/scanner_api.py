@@ -13,6 +13,7 @@ Pipeline:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import db
 from routes import router
 
 app = FastAPI(title="DocScanner API", version="2.0.0")
@@ -25,6 +26,11 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+
+@app.on_event("startup")
+def _init_db() -> None:
+    db.init_db()
 
 if __name__ == "__main__":
     import uvicorn
