@@ -124,7 +124,7 @@ class FakeServo:
 class FakeServoController:
     def __init__(self, delay=False):
         self.page_drop = FakeServo(delay=delay)
-        self.page_clamp_left = FakeServo(delay=delay)
+        self.page_clamp_big = FakeServo(delay=delay)
         self.reloads = []
 
     def reload_config(self, old_config, new_config):

@@ -203,8 +203,8 @@ class ServoController:
         return self._servos["page_drop"]
 
     @property
-    def page_clamp_left(self):
-        return self._servos["page_clamp_left"]
+    def page_clamp_big(self):
+        return self._servos["page_clamp_big"]
 
     def get(self, name):
         return self._servos[name]

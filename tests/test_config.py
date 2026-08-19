@@ -31,8 +31,8 @@ def test_missing_page_drop_servo_is_rejected(config_manager, config):
 
 def test_valid_named_servo_config_loads(config):
     assert config["servos"]["page_drop"]["pin"] == 12
-    assert config["servos"]["page_clamp_left"]["pin"] == 19
-    assert config["servos"]["page_clamp_right"]["pin"] == 27
+    assert config["servos"]["page_clamp_big"]["pin"] == 19
+    assert config["servos"]["page_clamp_small"]["pin"] == 27
     assert config["servos"]["page_drop"]["pin_factory"] == "pigpio"
 
 

@@ -83,7 +83,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "detach_after_move": True,
             "pin_factory": "pigpio",
         },
-        "page_clamp_left": {
+        "page_clamp_big": {
             "pin": 19,
             "min_angle": 0,
             "max_angle": 180,
@@ -105,7 +105,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "detach_after_move": True,
             "pin_factory": "pigpio",
         },
-        "page_clamp_right": {
+        "page_clamp_small": {
             "pin": 27,
             "min_angle": 0,
             "max_angle": 180,
@@ -307,7 +307,7 @@ class ConfigManager:
         if not isinstance(servos, dict):
             raise ConfigError("section [servos] must be a table")
         # Both are driven by the page turn, so both must exist.
-        for required in ("page_drop", "page_clamp_left"):
+        for required in ("page_drop", "page_clamp_big"):
             if required not in servos:
                 raise ConfigError(f"servos.{required} is required")
         for name, servo in servos.items():
@@ -505,7 +505,7 @@ default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
-[servos.page_clamp_left]
+[servos.page_clamp_big]
 pin = 19
 min_angle = 0
 max_angle = 180
@@ -527,7 +527,7 @@ default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
-[servos.page_clamp_right]
+[servos.page_clamp_small]
 pin = 27
 min_angle = 0
 max_angle = 180

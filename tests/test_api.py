@@ -240,7 +240,7 @@ def test_page_turn_drives_every_device(api_client, api_server):
     assert response.json == {"ok": True, "run_id": run_id}
 
     # Clamp down then up, arm down then up.
-    assert [i["degrees"] for i in api_server.servos.page_clamp_left.angles] == [105, 0]
+    assert [i["degrees"] for i in api_server.servos.page_clamp_big.angles] == [105, 0]
     assert [i["degrees"] for i in api_server.servos.page_drop.angles] == [105, 45]
 
 
@@ -264,7 +264,7 @@ def test_page_turn_splits_the_outward_run_and_returns_exactly(api_client, api_se
 def test_page_turn_order_lifts_the_clamp_mid_run(api_client, api_server):
     """Clamp drops before the arm and lifts between the two stepper halves."""
     order = []
-    api_server.servos.page_clamp_left.set_angle = lambda degrees, settle_time=None: (
+    api_server.servos.page_clamp_big.set_angle = lambda degrees, settle_time=None: (
         order.append(f"clamp:{degrees}")
     )
     api_server.servos.page_drop.set_angle = lambda degrees, settle_time=None: (

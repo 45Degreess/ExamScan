@@ -73,7 +73,7 @@ default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
-[servos.page_clamp_right]
+[servos.page_clamp_small]
 pin = 27
 min_angle = 0
 max_angle = 180
@@ -96,7 +96,7 @@ default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
-[servos.page_clamp_left]
+[servos.page_clamp_big]
 pin = 19
 min_angle = 0
 max_angle = 180

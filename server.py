@@ -315,11 +315,11 @@ class ExamScanServer(ThreadingHTTPServer):
         page turn where it started and cannot creep round.
         """
         servo_config = self.config["servos"]["page_drop"]
-        clamp_config = self.config["servos"]["page_clamp_left"]
+        clamp_config = self.config["servos"]["page_clamp_big"]
         workflow = self.config["workflow"]
         motor_config = self.config["motor"]
         page_drop_servo = self.servos.page_drop
-        clamp_servo = self.servos.page_clamp_left
+        clamp_servo = self.servos.page_clamp_big
 
         # Split in steps, not degrees: two half-degree moves can round to one
         # step more or less than the single full move, which would leave the
