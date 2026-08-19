@@ -76,30 +76,6 @@ class FakeCamera:
         self.streaming = False
 
 
-class FakeWheelMotor:
-    """Records page-turn requests. With delay=True it also sleeps for them,
-    which is what makes the server's busy lock observable from a client."""
-
-    def __init__(self, delay=False):
-        self.delay = delay
-        self.turns = []
-
-    def run_for(self, seconds, speed=None, forward=True, brake=False):
-        self.turns.append(
-            {
-                "seconds": seconds,
-                "speed": speed,
-                "forward": forward,
-                "brake": brake,
-            }
-        )
-        if self.delay:
-            time.sleep(seconds)
-
-    def cleanup(self):
-        pass
-
-
 class FakeStepperMotor:
     """Records rotations. With delay=True it also takes time doing them."""
 

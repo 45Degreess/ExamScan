@@ -13,7 +13,6 @@ from fakes import (
     FakeServo,
     FakeServoController,
     FakeStepperMotor,
-    FakeWheelMotor,
 )
 from server import ExamScanServer
 
@@ -24,7 +23,6 @@ __all__ = [
     "FakeServo",
     "FakeServoController",
     "FakeStepperMotor",
-    "FakeWheelMotor",
 ]
 
 
@@ -50,7 +48,6 @@ def config_dict(tmp_path):
     for pause in (
         "clamp_down_pause",
         "servo_down_pause",
-        "wheel_pause",
         "clamp_up_pause",
         "stepper_pause",
         "servo_up_pause",
@@ -121,7 +118,6 @@ def api_server(config_manager, config, sample_image):
         config_manager,
         config,
         FakeCamera(sample_image),
-        FakeWheelMotor(),
         FakeServoController(),
         FakeStepperMotor(),
     )

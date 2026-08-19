@@ -42,9 +42,6 @@ def test_valid_named_servo_config_loads(config):
         ("motor", "step_pin", 22),
         ("motor", "dir_pin", 23),
         ("motor", "enable_pin", 24),
-        ("dc_motor", "in1_pin", 17),
-        ("dc_motor", "in2_pin", 27),
-        ("dc_motor", "enable_pin", 18),
         ("fan", "pin", 13),
         ("fan", "tach_pin", 22),
     ],
@@ -78,7 +75,6 @@ def test_new_servo_pin_requires_restart(config_manager, config):
         ("server", "port", 9000),
         ("workflow", "servo_down_pause", 0.5),
         ("motor", "step_delay", 0.002),
-        ("dc_motor", "default_speed", 75),
         ("fan", "min_start_duty_pct", 15),
     ],
 )

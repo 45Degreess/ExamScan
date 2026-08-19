@@ -46,16 +46,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_degrees": 190.0,
         "default_clockwise": True,
     },
-    "dc_motor": {
-        "in1_pin": 23,
-        "in2_pin": 24,
-        "enable_pin": 25,
-        "pwm_freq": 100,
-        "default_speed": 100,
-        "default_turn_seconds": 3.0,
-        "default_forward": True,
-        "brake_after_turn": False,
-    },
     "servos": {
         "page_drop": {
             "pin": 12,
@@ -131,7 +121,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "workflow": {
         "clamp_down_pause": 1.0,
         "servo_down_pause": 2.0,
-        "wheel_pause": 1.0,
         "clamp_up_pause": 0.5,
         "stepper_pause": 1.0,
         "servo_up_pause": 1.0,
@@ -144,7 +133,6 @@ REQUIRED_SECTIONS = set(DEFAULT_CONFIG)
 LIVE_SECTIONS = {"server", "paths", "workflow"}
 RESTART_FIELDS = {
     "motor": {"step_pin", "dir_pin", "enable_pin"},
-    "dc_motor": {"in1_pin", "in2_pin", "enable_pin"},
     "fan": {"pin", "tach_pin"},
 }
 
@@ -239,17 +227,6 @@ class ConfigManager:
         ):
             applied.append("motor.defaults")
         if (
-            old_config["dc_motor"]["default_speed"]
-            != new_config["dc_motor"]["default_speed"]
-            or old_config["dc_motor"]["default_turn_seconds"]
-            != new_config["dc_motor"]["default_turn_seconds"]
-            or old_config["dc_motor"]["default_forward"]
-            != new_config["dc_motor"]["default_forward"]
-            or old_config["dc_motor"]["brake_after_turn"]
-            != new_config["dc_motor"]["brake_after_turn"]
-        ):
-            applied.append("dc_motor.defaults")
-        if (
             old_config["fan"]["min_start_duty_pct"]
             != new_config["fan"]["min_start_duty_pct"]
             or old_config["fan"]["tach_pulses_per_rev"]
@@ -305,17 +282,6 @@ class ConfigManager:
             raise ConfigError("motor.default_degrees must be greater than 0")
         self._require_bool(motor, "default_clockwise", "motor")
 
-        dc_motor = config["dc_motor"]
-        for key in ("in1_pin", "in2_pin", "enable_pin"):
-            self._require_int(dc_motor, key, "dc_motor", minimum=0)
-        self._require_int(dc_motor, "pwm_freq", "dc_motor", minimum=1)
-        self._require_number(dc_motor, "default_speed", "dc_motor", minimum=0)
-        if dc_motor["default_speed"] > 100:
-            raise ConfigError("dc_motor.default_speed must be at most 100")
-        self._require_number(dc_motor, "default_turn_seconds", "dc_motor", minimum=0)
-        self._require_bool(dc_motor, "default_forward", "dc_motor")
-        self._require_bool(dc_motor, "brake_after_turn", "dc_motor")
-
         servos = config["servos"]
         if not isinstance(servos, dict):
             raise ConfigError("section [servos] must be a table")
@@ -341,7 +307,6 @@ class ConfigManager:
         for pause in (
             "clamp_down_pause",
             "servo_down_pause",
-            "wheel_pause",
             "clamp_up_pause",
             "stepper_pause",
             "servo_up_pause",
@@ -469,16 +434,6 @@ default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = true
 
-[dc_motor]
-in1_pin = 23
-in2_pin = 24
-enable_pin = 25
-pwm_freq = 100
-default_speed = 100
-default_turn_seconds = 3.0
-default_forward = true
-brake_after_turn = false
-
 [servos.page_drop]
 pin = 12
 min_angle = 0
@@ -552,7 +507,6 @@ tach_pulses_per_rev = 2
 [workflow]
 clamp_down_pause = 1.0
 servo_down_pause = 2.0
-wheel_pause = 1.0
 clamp_up_pause = 0.5
 stepper_pause = 1.0
 servo_up_pause = 1.0

@@ -1,6 +1,6 @@
 """The ExamScan web layer: HTTP routing, run workflow, and the server loop.
 
-Hardware-agnostic. Entry points build the camera, wheel motor and servos, then
+Hardware-agnostic. Entry points build the camera, servos and stepper, then
 hand them to `serve()` — `main.py` with real hardware, `devserver.py` with fakes.
 """
 
@@ -234,7 +234,6 @@ class ExamScanServer(ThreadingHTTPServer):
         config_manager,
         config,
         camera,
-        wheel_motor,
         servos,
         stepper,
         handler=ExamScanHandler,
@@ -243,7 +242,6 @@ class ExamScanServer(ThreadingHTTPServer):
         self.config_manager = config_manager
         self.config = config
         self.camera = camera
-        self.wheel_motor = wheel_motor
         self.servos = servos
         self.stepper = stepper
         self.run_manager = RunManager(config)
@@ -309,7 +307,7 @@ class ExamScanServer(ThreadingHTTPServer):
             raise
 
     def page_turn(self):
-        """Clamp down, arm down, wheel, stepper out, clamp up, arm up, stepper back.
+        """Clamp down, arm down, stepper out, clamp up, arm up, stepper back.
 
         The clamp lifts partway through the stepper's outward run, so that run
         is split into two halves with the lift between them. The stepper then
@@ -319,7 +317,6 @@ class ExamScanServer(ThreadingHTTPServer):
         servo_config = self.config["servos"]["page_drop"]
         clamp_config = self.config["servos"]["page_clamp_left"]
         workflow = self.config["workflow"]
-        dc_motor_config = self.config["dc_motor"]
         motor_config = self.config["motor"]
         page_drop_servo = self.servos.page_drop
         clamp_servo = self.servos.page_clamp_left
@@ -345,14 +342,6 @@ class ExamScanServer(ThreadingHTTPServer):
             settle_time=servo_config["default_settle_time"],
         )
         time.sleep(workflow["servo_down_pause"])
-
-        self.wheel_motor.run_for(
-            dc_motor_config["default_turn_seconds"],
-            speed=dc_motor_config["default_speed"],
-            forward=dc_motor_config["default_forward"],
-            brake=dc_motor_config["brake_after_turn"],
-        )
-        time.sleep(workflow["wheel_pause"])
 
         self.stepper.move_steps(first_steps, clockwise=clockwise)
 
@@ -424,7 +413,6 @@ def serve(
     config_manager,
     config,
     camera,
-    wheel_motor,
     servos,
     stepper,
     banner=None,
@@ -442,7 +430,6 @@ def serve(
         config_manager,
         config,
         camera,
-        wheel_motor,
         servos,
         stepper,
         handler=handler,
@@ -460,7 +447,6 @@ def serve(
     finally:
         server.server_close()
         camera.stop()
-        wheel_motor.cleanup()
         servos.cleanup()
         # Last, so its pull-up restore lands after everything else is released.
         stepper.cleanup()

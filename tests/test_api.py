@@ -11,7 +11,6 @@ from tests.conftest import (
     FakeCamera,
     FakeServoController,
     FakeStepperMotor,
-    FakeWheelMotor,
 )
 
 
@@ -128,7 +127,6 @@ def test_custom_handler_overrides_root_but_inherits_the_api(
         config_manager,
         config,
         FakeCamera(sample_image),
-        FakeWheelMotor(),
         FakeServoController(),
         FakeStepperMotor(),
         handler=PageHandler,
@@ -214,10 +212,6 @@ def test_auto_scan_completes_fixed_page_run(api_client, api_server):
     assert completed.status == 200
     assert completed.json["status"] == "complete"
     assert completed.json["page_count"] == 3
-    assert api_server.wheel_motor.turns == [
-        {"seconds": 3.0, "speed": 100, "forward": True, "brake": False},
-        {"seconds": 3.0, "speed": 100, "forward": True, "brake": False},
-    ]
     assert [item["degrees"] for item in api_server.servos.page_drop.angles] == [
         105,
         45,
@@ -248,10 +242,6 @@ def test_page_turn_drives_every_device(api_client, api_server):
     # Clamp down then up, arm down then up.
     assert [i["degrees"] for i in api_server.servos.page_clamp_left.angles] == [105, 0]
     assert [i["degrees"] for i in api_server.servos.page_drop.angles] == [105, 45]
-    # One wheel spin.
-    assert api_server.wheel_motor.turns == [
-        {"seconds": 3.0, "speed": 100, "forward": True, "brake": False}
-    ]
 
 
 def test_page_turn_splits_the_outward_run_and_returns_exactly(api_client, api_server):
@@ -283,7 +273,6 @@ def test_page_turn_order_lifts_the_clamp_mid_run(api_client, api_server):
     api_server.stepper.move_steps = lambda steps, clockwise=True: order.append(
         f"stepper:{'cw' if clockwise else 'ccw'}"
     )
-    api_server.wheel_motor.run_for = lambda *a, **k: order.append("wheel")
 
     run_id = api_client.post("/api/runs").json["run_id"]
     api_client.post(f"/api/runs/{run_id}/page-turn")
@@ -291,7 +280,6 @@ def test_page_turn_order_lifts_the_clamp_mid_run(api_client, api_server):
     assert order == [
         "clamp:105",
         "arm:105",
-        "wheel",
         "stepper:cw",
         "clamp:0",
         "stepper:cw",

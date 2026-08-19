@@ -34,16 +34,6 @@ default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = true
 
-[dc_motor]
-in1_pin = 23
-in2_pin = 24
-enable_pin = 25
-pwm_freq = 100
-default_speed = 60
-default_turn_seconds = 0.5
-default_forward = false
-brake_after_turn = false
-
 [servos.page_drop]
 pin = 12
 min_angle = 0
@@ -120,7 +110,6 @@ tach_pulses_per_rev = 2
 # return stepper.
 clamp_down_pause = 1.0
 servo_down_pause = 1.0
-wheel_pause = 1.0
 clamp_up_pause = 0.5
 stepper_pause = 1.0
 servo_up_pause = 1.0
