@@ -1,11 +1,12 @@
 """The ExamScan web layer: HTTP routing, run workflow, and the server loop.
 
-Hardware-agnostic. Entry points build the camera, servos and stepper, then
-hand them to `serve()` — `main.py` with real hardware, `devserver.py` with fakes.
+Hardware-agnostic. Entry points build the camera, servos and stepper, then hand
+them to `serve()` — `main.py` with real hardware, `devserver.py` with fakes.
 """
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -236,6 +237,8 @@ class ExamScanServer(ThreadingHTTPServer):
         camera,
         servos,
         stepper,
+        stepper2,
+        fan,
         handler=ExamScanHandler,
     ):
         super().__init__(address, handler)
@@ -244,6 +247,8 @@ class ExamScanServer(ThreadingHTTPServer):
         self.camera = camera
         self.servos = servos
         self.stepper = stepper
+        self.stepper2 = stepper2
+        self.fan = fan
         self.run_manager = RunManager(config)
         self.operation_lock = threading.Lock()
         self.operation_name = None
@@ -306,61 +311,180 @@ class ExamScanServer(ThreadingHTTPServer):
             self._record_failure(run_id, "page-turn", exc)
             raise
 
-    def page_turn(self):
-        """Clamp down, arm down, stepper out, clamp up, arm up, stepper back.
+    def _seat_and_hold(self, servo, servo_config):
+        """Seat a clamp at its contact angle, then hold just off the stop.
 
-        The clamp lifts partway through the stepper's outward run, so that run
-        is split into two halves with the lift between them. The stepper then
-        goes all the way back once the arm is clear, so the wheel ends every
-        page turn where it started and cannot creep round.
+        Holding hard against a stop the servo cannot reach leaves it stalled -
+        it buzzes, warms up, and drags the supply down. Easing back to
+        hold_angle keeps the clamp's pressure at an angle it can actually hold.
         """
-        servo_config = self.config["servos"]["page_drop"]
-        clamp_config = self.config["servos"]["page_clamp_big"]
-        workflow = self.config["workflow"]
-        motor_config = self.config["motor"]
-        page_drop_servo = self.servos.page_drop
-        clamp_servo = self.servos.page_clamp_big
+        settle = servo_config["default_settle_time"]
+        servo.set_angle(servo_config["contact_angle"], settle_time=settle)
+        if not servo_config["use_hold"]:
+            servo.detach()
+            return time.monotonic()
+        servo.set_angle(servo_config["hold_angle"], settle_time=settle, hold=True)
+        return time.monotonic()
 
-        # Split in steps, not degrees: two half-degree moves can round to one
-        # step more or less than the single full move, which would leave the
-        # wheel short of where it started. Splitting the step count is exact.
-        total_steps = round(
-            motor_config["steps_per_rev"] * motor_config["default_degrees"] / 360
-        )
-        first_steps = total_steps // 2
-        second_steps = total_steps - first_steps
-        clockwise = motor_config["default_clockwise"]
+    def _lift(self, servo, servo_config, held_since, name):
+        """Lift a clamp, reporting a hold that outlasted its own cut-off.
 
-        clamp_servo.set_angle(
-            clamp_config["down_angle"],
-            settle_time=clamp_config["default_settle_time"],
-        )
-        time.sleep(workflow["clamp_down_pause"])
-
-        page_drop_servo.set_angle(
-            servo_config["down_angle"],
-            settle_time=servo_config["default_settle_time"],
-        )
-        time.sleep(workflow["servo_down_pause"])
-
-        self.stepper.move_steps(first_steps, clockwise=clockwise)
-
-        clamp_servo.set_angle(
-            clamp_config["up_angle"],
-            settle_time=clamp_config["default_settle_time"],
-        )
-        time.sleep(workflow["clamp_up_pause"])
-
-        self.stepper.move_steps(second_steps, clockwise=clockwise)
-        time.sleep(workflow["stepper_pause"])
-
-        page_drop_servo.set_angle(
+        A hold past max_hold_seconds detaches on a timer rather than raising, so
+        the clamp goes limp silently and _last_angle keeps claiming it is still
+        down. Logging the overrun is the only way that surfaces.
+        """
+        if held_since is not None:
+            elapsed = time.monotonic() - held_since
+            if servo_config["use_hold"] and elapsed > servo_config["max_hold_seconds"]:
+                print(
+                    f"page-turn: {name} held {elapsed:.1f}s, past its "
+                    f"{servo_config['max_hold_seconds']:g}s cut-off - it will "
+                    f"have gone limp",
+                    file=sys.stderr,
+                )
+        servo.set_angle(
             servo_config["up_angle"],
             settle_time=servo_config["default_settle_time"],
         )
-        time.sleep(workflow["servo_up_pause"])
 
-        self.stepper.move_steps(total_steps, clockwise=not clockwise)
+    @staticmethod
+    def _in_parallel(*moves):
+        """Run motor moves at once, surfacing whatever they raise.
+
+        An exception inside a Thread does not reach the joining thread, so a
+        motor that failed would be swallowed and the page turn would report
+        success on a page that never turned. Each result is captured and
+        re-raised after the join.
+        """
+        errors = []
+
+        def guard(move):
+            def run():
+                try:
+                    move()
+                except Exception as exc:
+                    errors.append(exc)
+
+            return run
+
+        threads = [threading.Thread(target=guard(move)) for move in moves]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if errors:
+            raise errors[0]
+
+    @staticmethod
+    def _steps_for(motor_config, degrees):
+        return round(motor_config["steps_per_rev"] * degrees / 360)
+
+    def page_turn(self):
+        """The sixteen-phase page turn, as tuned in hardware/test_workflow.py.
+
+        Small clamp down and hold, fan up to speed, arm down, big clamp takes
+        over, then the two wheels trade the page between them and unwind.
+
+        The wheels do NOT end where they started: each motor's final return
+        stops return_short_degrees short, so a multi-page run walks them
+        steadily round. Set return_short_degrees to 0 in config.toml for an
+        exact round trip.
+        """
+        arm_config = self.config["servos"]["page_drop"]
+        big_config = self.config["servos"]["page_clamp_big"]
+        small_config = self.config["servos"]["page_clamp_small"]
+        workflow = self.config["workflow"]
+        fan_config = self.config["fan"]
+        m1_config = self.config["motor"]
+        m2_config = self.config["motor2"]
+
+        arm = self.servos.page_drop
+        big = self.servos.page_clamp_big
+        small = self.servos.page_clamp_small
+
+        # Split in steps, not degrees: two part-degree moves can round to one
+        # step more or less than the single full move, which would leave a
+        # wheel off by a step every page.
+        m1_first = self._steps_for(m1_config, m1_config["page_turn_degrees"])
+        m1_shared = self._steps_for(m1_config, m1_config["shared_degrees"])
+        m2_first = self._steps_for(m2_config, m2_config["page_turn_degrees"])
+        m2_shared = self._steps_for(m2_config, m2_config["shared_degrees"])
+        m2_return = m2_first + m2_shared
+        m1_home = m1_first - self._steps_for(m1_config, m1_config["return_short_degrees"])
+        m2_home = m2_return - self._steps_for(m2_config, m2_config["return_short_degrees"])
+
+        m1_cw = m1_config["default_clockwise"]
+        m2_cw = m2_config["default_clockwise"]
+        motor_pause = workflow["motor_pause"]
+
+        # [1] Small clamp down and hold.
+        small_held = self._seat_and_hold(small, small_config)
+        time.sleep(workflow["small_clamp_hold_seconds"])
+
+        try:
+            # [2] Fan up, and give it time to reach speed before the arm lands.
+            self.fan.set_duty(fan_config["duty_pct"])
+            time.sleep(fan_config["spinup_seconds"])
+
+            # [3] Arm down. No hold - it rests on the page.
+            arm.set_angle(
+                arm_config["down_angle"],
+                settle_time=arm_config["default_settle_time"],
+            )
+            time.sleep(workflow["servo_down_pause"])
+
+            # [4] Big clamp takes the grip.
+            big_held = self._seat_and_hold(big, big_config)
+            time.sleep(workflow["clamp_down_pause"])
+
+            # [5] Small clamp out of the way.
+            self._lift(small, small_config, small_held, "page_clamp_small")
+            small_held = None
+            time.sleep(workflow["clamp_up_pause"])
+
+            # [6] Motor 1 out, staying energised so it holds the page against
+            # the clamp for the rest of the sequence.
+            self.stepper.move_steps(m1_first, clockwise=m1_cw, keep_enabled=True)
+            time.sleep(motor_pause)
+
+            # [7] Arm clear, then [8] fan off - the page is captive now.
+            self._lift(arm, arm_config, None, "page_drop")
+            time.sleep(workflow["servo_up_pause"])
+        finally:
+            # Whatever went wrong above, the fan does not keep running.
+            self.fan.set_duty(0)
+
+        # [9] Small clamp back down to grip before the big one lets go.
+        small_held = self._seat_and_hold(small, small_config)
+        time.sleep(workflow["clamp_down_pause"])
+
+        # [10] Big clamp releases.
+        self._lift(big, big_config, big_held, "page_clamp_big")
+        time.sleep(workflow["clamp_up_pause"])
+
+        # [11] Motor 2 out to meet it.
+        self.stepper2.move_steps(m2_first, clockwise=m2_cw)
+        time.sleep(motor_pause)
+
+        # [12] Both wheels carry the page together.
+        self._in_parallel(
+            lambda: self.stepper.move_steps(
+                m1_shared, clockwise=m1_cw, keep_enabled=True
+            ),
+            lambda: self.stepper2.move_steps(m2_shared, clockwise=m2_cw),
+        )
+        time.sleep(motor_pause)
+
+        # [13] Motor 2 home, [14] motor 1 unwinds the shared leg.
+        self.stepper2.move_steps(m2_home, clockwise=not m2_cw)
+        time.sleep(motor_pause)
+        self.stepper.move_steps(m1_shared, clockwise=not m1_cw, keep_enabled=True)
+        time.sleep(motor_pause)
+
+        # [15] Small clamp off, then [16] motor 1 home and finally de-energised.
+        self._lift(small, small_config, small_held, "page_clamp_small")
+        time.sleep(workflow["clamp_up_pause"])
+        self.stepper.move_steps(m1_home, clockwise=not m1_cw)
 
     def scan_step(self, run_id):
         manifest = self.capture_page(run_id)
@@ -415,6 +539,8 @@ def serve(
     camera,
     servos,
     stepper,
+    stepper2,
+    fan,
     banner=None,
     handler=ExamScanHandler,
 ):
@@ -432,6 +558,8 @@ def serve(
         camera,
         servos,
         stepper,
+        stepper2,
+        fan,
         handler=handler,
     )
 
@@ -448,6 +576,10 @@ def serve(
         server.server_close()
         camera.stop()
         servos.cleanup()
-        # Last, so its pull-up restore lands after everything else is released.
+        # Drives the fan back to 0 and drops the pigpio connection.
+        fan.cleanup()
+        # Last, so their pull-up restore lands after everything else is
+        # released.
         stepper.cleanup()
+        stepper2.cleanup()
         print("Stopped.")

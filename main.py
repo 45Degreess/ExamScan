@@ -12,11 +12,11 @@ from server import load_config, serve
 
 def main():
     config_manager, config = load_config()
-    camera, servos, stepper = build_hardware(config)
+    camera, servos, stepper, stepper2, fan = build_hardware(config)
 
     camera.start_recording()
 
-    serve(config_manager, config, camera, servos, stepper)
+    serve(config_manager, config, camera, servos, stepper, stepper2, fan)
 
 
 if __name__ == "__main__":

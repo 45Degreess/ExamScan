@@ -206,6 +206,10 @@ class ServoController:
     def page_clamp_big(self):
         return self._servos["page_clamp_big"]
 
+    @property
+    def page_clamp_small(self):
+        return self._servos["page_clamp_small"]
+
     def get(self, name):
         return self._servos[name]
 

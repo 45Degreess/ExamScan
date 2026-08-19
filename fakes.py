@@ -114,17 +114,50 @@ class FakeServo:
     def __init__(self, delay=False):
         self.delay = delay
         self.angles = []
+        self.held = False
 
-    def set_angle(self, degrees, settle_time=0.4):
-        self.angles.append({"degrees": degrees, "settle_time": settle_time})
+    def set_angle(self, degrees, settle_time=0.4, slow_start=False, hold=False):
+        self.angles.append(
+            {
+                "degrees": degrees,
+                "settle_time": settle_time,
+                "slow_start": slow_start,
+                "hold": hold,
+            }
+        )
+        self.held = hold
         if self.delay:
             time.sleep(settle_time)
+
+    def detach(self):
+        self.held = False
+
+
+class FakeFan:
+    """Records duty changes. Starts at 0, like the real FanController does."""
+
+    def __init__(self):
+        self.duty_pct = 0
+        self.duties = [0]
+
+    def set_duty(self, percent):
+        percent = max(0, min(100, float(percent)))
+        self.duty_pct = percent
+        self.duties.append(percent)
+        return percent
+
+    def read_rpm(self):
+        return None
+
+    def cleanup(self):
+        self.set_duty(0)
 
 
 class FakeServoController:
     def __init__(self, delay=False):
         self.page_drop = FakeServo(delay=delay)
         self.page_clamp_big = FakeServo(delay=delay)
+        self.page_clamp_small = FakeServo(delay=delay)
         self.reloads = []
 
     def reload_config(self, old_config, new_config):

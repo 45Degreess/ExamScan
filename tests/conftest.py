@@ -10,6 +10,7 @@ from PIL import Image
 from config import DEFAULT_CONFIG, ConfigManager
 from fakes import (
     FakeCamera,
+    FakeFan,
     FakeServo,
     FakeServoController,
     FakeStepperMotor,
@@ -51,8 +52,12 @@ def config_dict(tmp_path):
         "clamp_up_pause",
         "stepper_pause",
         "servo_up_pause",
+        "motor_pause",
+        "small_clamp_hold_seconds",
     ):
         config["workflow"][pause] = 0.0
+    # Same reason: the fan's spin-up is a real sleep before the arm drops.
+    config["fan"]["spinup_seconds"] = 0.0
     return config
 
 
@@ -120,6 +125,8 @@ def api_server(config_manager, config, sample_image):
         FakeCamera(sample_image),
         FakeServoController(),
         FakeStepperMotor(),
+        FakeStepperMotor(),
+        FakeFan(),
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
