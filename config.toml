@@ -65,6 +65,8 @@ approach_step_delay = 0.04
 departure_degrees = 10.0
 departure_step_degrees = 0.5
 departure_step_delay = 0.08
+# Cut-off for an opt-in hold, so a servo cannot stay stalled indefinitely.
+max_hold_seconds = 10.0
 down_angle = 95
 up_angle = 0
 default_settle_time = 0.4
@@ -86,6 +88,8 @@ approach_step_delay = 0.04
 departure_degrees = 10.0
 departure_step_degrees = 0.5
 departure_step_delay = 0.08
+# Cut-off for an opt-in hold, so a servo cannot stay stalled indefinitely.
+max_hold_seconds = 10.0
 down_angle = 90
 up_angle = 0
 default_settle_time = 0.4
@@ -107,6 +111,8 @@ approach_step_delay = 0.04
 departure_degrees = 10.0
 departure_step_degrees = 0.5
 departure_step_delay = 0.08
+# Cut-off for an opt-in hold, so a servo cannot stay stalled indefinitely.
+max_hold_seconds = 10.0
 down_angle = 73
 up_angle = 0
 default_settle_time = 0.4

@@ -81,6 +81,7 @@ def servo_config(**overrides):
         "departure_degrees": 10.0,
         "departure_step_degrees": 0.5,
         "departure_step_delay": 0.08,
+        "max_hold_seconds": 10.0,
         "down_angle": 105,
         "up_angle": 45,
         "default_settle_time": 0.4,
@@ -292,3 +293,101 @@ def test_controller_cleanup_closes_all_servos(monkeypatch):
     controller.cleanup()
 
     assert all(device.closed for device in FakeAngularServo.instances)
+
+
+class FakeTimer:
+    """Stands in for threading.Timer so hold tests never actually wait."""
+
+    instances = []
+
+    def __init__(self, interval, function):
+        self.interval = interval
+        self.function = function
+        self.started = False
+        self.cancelled = False
+        self.daemon = False
+        FakeTimer.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.function()
+
+
+def hold_servo(monkeypatch, **overrides):
+    module = load_servo_module(monkeypatch)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    FakeTimer.instances = []
+    monkeypatch.setattr(module.threading, "Timer", FakeTimer)
+    servo = module.ServoMotor.from_config(
+        servo_config(detach_after_move=True, **overrides)
+    )
+    return servo, FakeAngularServo.instances[0]
+
+
+def test_hold_keeps_the_servo_powered(monkeypatch):
+    servo, device = hold_servo(monkeypatch)
+
+    servo.set_angle(90, hold=True)
+
+    # Without hold this same config detaches - that is the whole point.
+    assert device.detached == 0
+    timer = FakeTimer.instances[0]
+    assert timer.interval == 10.0
+    assert timer.started is True
+    assert timer.daemon is True
+
+
+def test_default_path_still_detaches(monkeypatch):
+    """The guarantee that adding hold changed nothing for existing callers."""
+    servo, device = hold_servo(monkeypatch)
+
+    servo.set_angle(90)
+
+    assert device.detached == 1
+    assert FakeTimer.instances == []
+
+
+def test_detach_cancels_the_hold_timer(monkeypatch):
+    servo, device = hold_servo(monkeypatch)
+    servo.set_angle(90, hold=True)
+
+    servo.detach()
+
+    assert FakeTimer.instances[0].cancelled is True
+    assert device.detached == 1
+
+
+def test_hold_timer_releases_when_nothing_lifts(monkeypatch):
+    servo, device = hold_servo(monkeypatch, max_hold_seconds=2.5)
+    servo.set_angle(90, hold=True)
+
+    assert FakeTimer.instances[0].interval == 2.5
+    FakeTimer.instances[0].fire()
+
+    assert device.detached == 1
+
+
+def test_cleanup_cancels_the_hold_timer(monkeypatch):
+    servo, device = hold_servo(monkeypatch)
+    servo.set_angle(90, hold=True)
+
+    servo.cleanup()
+
+    assert FakeTimer.instances[0].cancelled is True
+    assert device.closed is True
+
+
+def test_a_second_hold_replaces_the_first_timer(monkeypatch):
+    servo, _ = hold_servo(monkeypatch)
+    servo.set_angle(90, hold=True)
+
+    servo.set_angle(45, hold=True)
+
+    first, second = FakeTimer.instances
+    assert first.cancelled is True
+    assert second.cancelled is False

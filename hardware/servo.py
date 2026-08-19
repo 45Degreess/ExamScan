@@ -1,3 +1,4 @@
+import threading
 import time
 
 from gpiozero import AngularServo
@@ -20,6 +21,7 @@ class ServoMotor:
         departure_degrees=10.0,
         departure_step_degrees=0.5,
         departure_step_delay=0.08,
+        max_hold_seconds=10.0,
         default_settle_time=0.4,
         detach_after_move=False,
         pin_factory="default",
@@ -34,6 +36,7 @@ class ServoMotor:
         self.departure_degrees = departure_degrees
         self.departure_step_degrees = departure_step_degrees
         self.departure_step_delay = departure_step_delay
+        self.max_hold_seconds = max_hold_seconds
         self.default_settle_time = default_settle_time
         self.detach_after_move = detach_after_move
         self._config = {
@@ -51,6 +54,7 @@ class ServoMotor:
             "departure_degrees": departure_degrees,
             "departure_step_degrees": departure_step_degrees,
             "departure_step_delay": departure_step_delay,
+            "max_hold_seconds": max_hold_seconds,
             "default_settle_time": default_settle_time,
             "detach_after_move": detach_after_move,
             "pin_factory": pin_factory,
@@ -60,6 +64,7 @@ class ServoMotor:
         # back from the device because a detached servo reports angle None,
         # which would lose the ramp's starting point after the first move.
         self._last_angle = 0.0
+        self._hold_timer = None
         self._servo = servo_class(
             pin,
             min_angle=min_angle,
@@ -87,6 +92,7 @@ class ServoMotor:
             departure_degrees=config["departure_degrees"],
             departure_step_degrees=config["departure_step_degrees"],
             departure_step_delay=config["departure_step_delay"],
+            max_hold_seconds=config["max_hold_seconds"],
             default_settle_time=config["default_settle_time"],
             detach_after_move=config["detach_after_move"],
             pin_factory=config["pin_factory"],
@@ -122,7 +128,7 @@ class ServoMotor:
             angle = target if remaining <= size else angle + direction * size
             yield angle, delay
 
-    def set_angle(self, degrees, settle_time=None, slow_start=False):
+    def set_angle(self, degrees, settle_time=None, slow_start=False, hold=False):
         steps = list(self._steps(self._last_angle, degrees, slow_start))
         if not steps:
             # Already there - still command it, so a detached servo re-engages.
@@ -136,13 +142,36 @@ class ServoMotor:
         time.sleep(self.default_settle_time if settle_time is None else settle_time)
         # Only after the whole ramp - detaching between steps would let the arm
         # go limp mid-move.
-        if self.detach_after_move:
+        if hold:
+            self._start_hold()
+        elif self.detach_after_move:
             self.detach()
 
+    def _start_hold(self):
+        """Stay powered so the servo actually grips, with a safety cut-off.
+
+        A held servo draws near-stall current and warms up, so the timer is a
+        backstop for a release that never comes. detach() cancels it, so the
+        normal path - hold, then lift - never waits for the timeout.
+        """
+        self._cancel_hold()
+        self._hold_timer = threading.Timer(self.max_hold_seconds, self.detach)
+        # Daemon, or a pending timer keeps the interpreter alive after a script
+        # has finished.
+        self._hold_timer.daemon = True
+        self._hold_timer.start()
+
+    def _cancel_hold(self):
+        if self._hold_timer is not None:
+            self._hold_timer.cancel()
+            self._hold_timer = None
+
     def detach(self):
+        self._cancel_hold()
         self._servo.detach()
 
     def cleanup(self):
+        self._cancel_hold()
         self._servo.close()
 
     @staticmethod

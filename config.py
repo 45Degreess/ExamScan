@@ -76,6 +76,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "departure_degrees": 10.0,
             "departure_step_degrees": 0.5,
             "departure_step_delay": 0.08,
+            "max_hold_seconds": 10.0,
             "down_angle": 105,
             "up_angle": 45,
             "default_settle_time": 0.4,
@@ -97,6 +98,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "departure_degrees": 10.0,
             "departure_step_degrees": 0.5,
             "departure_step_delay": 0.08,
+            "max_hold_seconds": 10.0,
             "down_angle": 105,
             "up_angle": 0,
             "default_settle_time": 0.4,
@@ -118,6 +120,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "departure_degrees": 10.0,
             "departure_step_degrees": 0.5,
             "departure_step_delay": 0.08,
+            "max_hold_seconds": 10.0,
             "down_angle": 105,
             "up_angle": 0,
             "default_settle_time": 0.4,
@@ -398,6 +401,9 @@ class ConfigManager:
         self._require_number(servo, "departure_degrees", section, minimum=0)
         self._require_number(servo, "departure_step_degrees", section, minimum=0)
         self._require_number(servo, "departure_step_delay", section, minimum=0)
+        self._require_number(servo, "max_hold_seconds", section, minimum=0)
+        if servo["max_hold_seconds"] <= 0:
+            raise ConfigError(f"{section}.max_hold_seconds must be greater than 0")
         # Strictly positive, or the ramp loop in ServoMotor._steps would never
         # close the gap. Set the delays to 0 for full speed instead.
         for key in ("step_degrees", "approach_step_degrees", "departure_step_degrees"):
@@ -492,6 +498,7 @@ approach_step_delay = 0.04
 departure_degrees = 10.0
 departure_step_degrees = 0.5
 departure_step_delay = 0.08
+max_hold_seconds = 10.0
 down_angle = 105
 up_angle = 45
 default_settle_time = 0.4
@@ -513,6 +520,7 @@ approach_step_delay = 0.04
 departure_degrees = 10.0
 departure_step_degrees = 0.5
 departure_step_delay = 0.08
+max_hold_seconds = 10.0
 down_angle = 105
 up_angle = 0
 default_settle_time = 0.4
@@ -534,6 +542,7 @@ approach_step_delay = 0.04
 departure_degrees = 10.0
 departure_step_degrees = 0.5
 departure_step_delay = 0.08
+max_hold_seconds = 10.0
 down_angle = 105
 up_angle = 0
 default_settle_time = 0.4
