@@ -45,6 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_turn_seconds": 3.0,
         "default_degrees": 190.0,
         "default_clockwise": True,
+        "invert_direction": False,
     },
     "servos": {
         "page_drop": {
@@ -281,6 +282,7 @@ class ConfigManager:
         if motor["default_degrees"] <= 0:
             raise ConfigError("motor.default_degrees must be greater than 0")
         self._require_bool(motor, "default_clockwise", "motor")
+        self._require_bool(motor, "invert_direction", "motor")
 
         servos = config["servos"]
         if not isinstance(servos, dict):
@@ -433,6 +435,7 @@ fast_delay = 0.001
 default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = true
+invert_direction = false
 
 [servos.page_drop]
 pin = 12

@@ -12,6 +12,7 @@ class StepperMotor:
         steps_per_rev,
         step_delay,
         fast_delay,
+        invert_direction=False,
     ):
         self._step_pin = step_pin
         self._dir_pin = dir_pin
@@ -19,6 +20,10 @@ class StepperMotor:
         self._steps_per_rev = steps_per_rev
         self._step_delay = step_delay
         self._fast_delay = fast_delay
+        # Which DIR level means clockwise depends on how the coils are wired,
+        # so it differs per motor. Inverting here keeps "clockwise" honest for
+        # callers instead of making them pass the opposite of what they mean.
+        self._invert_direction = invert_direction
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setup([step_pin, dir_pin, enable_pin], GPIO.OUT)
@@ -33,6 +38,7 @@ class StepperMotor:
             steps_per_rev=config["steps_per_rev"],
             step_delay=config["step_delay"],
             fast_delay=config["fast_delay"],
+            invert_direction=config["invert_direction"],
         )
 
     @property
@@ -47,7 +53,8 @@ class StepperMotor:
 
     def move_steps(self, steps, clockwise=True, step_delay=None):
         delay = self._step_delay if step_delay is None else step_delay
-        GPIO.output(self._dir_pin, GPIO.LOW if clockwise else GPIO.HIGH)
+        turn_cw = clockwise != self._invert_direction
+        GPIO.output(self._dir_pin, GPIO.LOW if turn_cw else GPIO.HIGH)
         self.enable()
         for _ in range(steps):
             GPIO.output(self._step_pin, GPIO.HIGH)

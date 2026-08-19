@@ -33,6 +33,7 @@ fast_delay = 0.001
 default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = true
+invert_direction = false
 
 [servos.page_drop]
 pin = 12

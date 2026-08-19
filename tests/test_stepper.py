@@ -56,6 +56,7 @@ def motor_config(**overrides):
         "steps_per_rev": 1600,
         "step_delay": 0.0,
         "fast_delay": 0.0,
+        "invert_direction": False,
     }
     config.update(overrides)
     return config
@@ -120,3 +121,29 @@ def test_cleanup_releases_only_its_own_pins(monkeypatch):
     motor.cleanup()
 
     assert gpio.cleaned == [21, 20, 16]
+
+
+def dir_level_for(monkeypatch, clockwise, **overrides):
+    """The level written to the DIR pin for a given requested direction."""
+    gpio = FakeGPIO()
+    module = load_motor_module(monkeypatch, gpio)
+    motor = build(module, **overrides)
+    gpio.outputs.clear()
+    motor.move_steps(1, clockwise=clockwise)
+    return next(value for pin, value in gpio.outputs if pin == 20)
+
+
+def test_invert_direction_flips_the_dir_level(monkeypatch):
+    """Which DIR level means clockwise is a per-motor wiring fact."""
+    plain = dir_level_for(monkeypatch, clockwise=True)
+    inverted = dir_level_for(monkeypatch, clockwise=True, invert_direction=True)
+
+    assert plain != inverted
+
+
+def test_invert_direction_still_distinguishes_the_two_directions(monkeypatch):
+    """Inverting must swap both senses, not collapse them onto one level."""
+    cw = dir_level_for(monkeypatch, clockwise=True, invert_direction=True)
+    ccw = dir_level_for(monkeypatch, clockwise=False, invert_direction=True)
+
+    assert cw != ccw
