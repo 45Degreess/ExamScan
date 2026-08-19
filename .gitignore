@@ -21,3 +21,6 @@ focus_tests/
 
 # Local backups taken before editing
 *.bak
+# Generated knowledge graph and agent instructions
+graphify-out/
+CLAUDE.md
