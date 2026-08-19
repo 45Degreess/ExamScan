@@ -147,3 +147,43 @@ def test_invert_direction_still_distinguishes_the_two_directions(monkeypatch):
     ccw = dir_level_for(monkeypatch, clockwise=False, invert_direction=True)
 
     assert cw != ccw
+
+
+def test_move_steps_de_energises_when_it_finishes(monkeypatch):
+    gpio = FakeGPIO()
+    module = load_motor_module(monkeypatch, gpio)
+    motor = build(module)
+
+    motor.move_steps(2, clockwise=True)
+
+    # ENABLE is active low, so high is off.
+    assert gpio.outputs[-1] == (16, gpio.HIGH)
+
+
+def test_keep_enabled_leaves_the_coils_live(monkeypatch):
+    """Holding position means never letting go, not letting go and grabbing again.
+
+    Re-enabling after the fact would leave a window where the shaft is free to
+    slip under load, which is the whole point of holding.
+    """
+    gpio = FakeGPIO()
+    module = load_motor_module(monkeypatch, gpio)
+    motor = build(module)
+
+    motor.move_steps(2, clockwise=True, keep_enabled=True)
+
+    assert gpio.outputs[-1] != (16, gpio.HIGH)
+    assert (16, gpio.LOW) in gpio.outputs
+    # And the caller can still release it explicitly.
+    motor.disable()
+    assert gpio.outputs[-1] == (16, gpio.HIGH)
+
+
+def test_move_degrees_passes_keep_enabled_through(monkeypatch):
+    gpio = FakeGPIO()
+    module = load_motor_module(monkeypatch, gpio)
+    motor = build(module)
+
+    motor.move_degrees(90, clockwise=True, keep_enabled=True)
+
+    assert gpio.outputs[-1] != (16, gpio.HIGH)

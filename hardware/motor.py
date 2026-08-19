@@ -51,7 +51,13 @@ class StepperMotor:
     def disable(self):
         GPIO.output(self._enable_pin, GPIO.HIGH)
 
-    def move_steps(self, steps, clockwise=True, step_delay=None):
+    def move_steps(self, steps, clockwise=True, step_delay=None, keep_enabled=False):
+        """Pulse out `steps`, de-energising afterwards unless asked not to.
+
+        keep_enabled leaves the coils powered so the motor holds position
+        against a load. Re-enabling after the fact would leave a window where
+        the shaft is free to slip, which is the whole thing being avoided.
+        """
         delay = self._step_delay if step_delay is None else step_delay
         turn_cw = clockwise != self._invert_direction
         GPIO.output(self._dir_pin, GPIO.LOW if turn_cw else GPIO.HIGH)
@@ -61,11 +67,12 @@ class StepperMotor:
             time.sleep(delay)
             GPIO.output(self._step_pin, GPIO.LOW)
             time.sleep(delay)
-        self.disable()
+        if not keep_enabled:
+            self.disable()
 
-    def move_degrees(self, degrees, clockwise=True):
+    def move_degrees(self, degrees, clockwise=True, keep_enabled=False):
         steps = round(self._steps_per_rev * degrees / 360)
-        self.move_steps(steps, clockwise)
+        self.move_steps(steps, clockwise, keep_enabled=keep_enabled)
 
     def cleanup(self):
         self.disable()

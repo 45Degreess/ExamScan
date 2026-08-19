@@ -82,19 +82,29 @@ class FakeStepperMotor:
     def __init__(self, delay=False):
         self.delay = delay
         self.moves = []
+        self.enabled = False
 
-    def move_degrees(self, degrees, clockwise=True):
-        self.moves.append({"degrees": degrees, "clockwise": clockwise})
+    def move_degrees(self, degrees, clockwise=True, keep_enabled=False):
+        self.moves.append(
+            {"degrees": degrees, "clockwise": clockwise, "keep_enabled": keep_enabled}
+        )
+        self.enabled = keep_enabled
         if self.delay:
             time.sleep(degrees / 360.0)
 
-    def move_steps(self, steps, clockwise=True):
-        self.moves.append({"steps": steps, "clockwise": clockwise})
+    def move_steps(self, steps, clockwise=True, step_delay=None, keep_enabled=False):
+        self.moves.append(
+            {"steps": steps, "clockwise": clockwise, "keep_enabled": keep_enabled}
+        )
+        self.enabled = keep_enabled
         if self.delay:
             time.sleep(steps / 200.0)
 
+    def enable(self):
+        self.enabled = True
+
     def disable(self):
-        pass
+        self.enabled = False
 
     def cleanup(self):
         pass
