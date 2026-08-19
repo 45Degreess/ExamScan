@@ -4,24 +4,41 @@ A Raspberry Pi-based document scanner that captures high-resolution images of ex
 fixed overhead camera and advances pages automatically. Each scanning run is saved as a folder of
 JPEGs, downloadable as a ZIP.
 
-A page turn has eight phases:
+A page turn has sixteen phases, driving two clamps, the arm, the fan and both steppers:
 
-1. **Drop the clamp** onto the stack (`page_clamp_left` to its `down_angle`)
-2. **Drop the arm** onto the page (`page_drop` to its `down_angle`)
-3. **Spin the DC wheel** to feed the page across
-4. **Turn the stepper** halfway through `motor.default_degrees`
-5. **Lift the clamp** clear
-6. **Turn the stepper** the rest of the way
+1. **Drop the small clamp** onto the stack and hold it (`page_clamp_small`)
+2. **Fan to `fan.duty_pct`**, then wait `fan.spinup_seconds` for it to reach speed
+3. **Drop the arm** onto the page (`page_drop` to its `down_angle`), no hold
+4. **Drop the big clamp** and hold it (`page_clamp_big`)
+5. **Lift the small clamp** clear
+6. **Turn motor 1** out `motor.page_turn_degrees`, staying energised
 7. **Lift the arm** clear
-8. **Return the stepper** the full distance the other way
+8. **Fan off** — the page is captive now
+9. **Drop the small clamp** again and hold
+10. **Lift the big clamp** clear
+11. **Turn motor 2** out `motor2.page_turn_degrees`
+12. **Turn both motors** a further `shared_degrees`, in parallel
+13. **Return motor 2** home
+14. **Turn motor 1** back `shared_degrees`
+15. **Lift the small clamp** clear
+16. **Return motor 1** home, de-energising at last
 
-The clamp lifts mid-run, which is why phases 4 and 6 are two halves of one movement. Phase 8 means
-the wheel ends every page turn where it started, so repeated turns can't let it creep round.
+The two clamps hand the page between them: each grips before the other releases, so the page is
+never loose. Motor 1 stays energised from phase 6 to phase 16 so it holds position against the
+clamp rather than slipping under load.
 
-The outward run is split by **step count, not degrees** — halving the degrees and rounding twice can
-land a step away from the single return move, leaving the wheel slightly short on every page.
+Every move is split by **step count, not degrees** — converting part-degree moves and rounding twice
+can land a step away from the matching return, leaving a wheel off by a step on every page.
 
-Each boundary has its own configurable pause: `clamp_down_pause`, `servo_down_pause`, `wheel_pause`,
+**The wheels do not end where they started.** Each motor's final return stops
+`return_short_degrees` short, so a multi-page run walks both wheels steadily round. That is a
+correction for a rig that over-travels; set `return_short_degrees = 0` for an exact round trip.
+
+Clamps seat at `contact_angle`, then ease back to `hold_angle` and stay powered there. Holding hard
+against a stop the servo cannot reach leaves it stalled — buzzing, warming up and dragging the
+supply down — so the few degrees of back-off keep the grip without the fight.
+
+Each boundary has its own configurable pause: `clamp_down_pause`, `servo_down_pause`,
 `clamp_up_pause`, `stepper_pause`, `servo_up_pause`.
 
 ## Architecture
@@ -38,10 +55,10 @@ the stream and drives capture and page turns over the API. See [API](#api) for t
 | Component | Details |
 |---|---|
 | Camera | Raspberry Pi Camera Module 3 (IMX708) |
-| Page wheel | DC motor, driven via PWM |
 | Page drop / clamps | Servos |
 | Fan | Waveshare FAN-4020-PWM-5V, 25 kHz hardware PWM |
-| Stepper | NEMA 17 SM24240 with MKS TMC2209 V2.0, driven as step/dir |
+| Stepper (page wheel) | NEMA 17 SM24240 with MKS TMC2209 V2.0, driven as step/dir |
+| Stepper 2 | DRV8825, full step — drives phases 11 to 13 of the page turn |
 
 ### Wiring
 
@@ -49,11 +66,11 @@ Pins are defined in `config.toml` and can be changed there; a pin change needs a
 
 | Signal | GPIO (BCM) |
 |---|---|
-| DC motor IN1 / IN2 / ENABLE | 23 / 24 / 25 |
-| Servo — page drop | 12 |
-| Servo — page clamp left / right | 19 / 27 |
+| Servo — page drop | 22 |
+| Servo — page clamp big / small | 19 / 27 |
 | Stepper STEP / DIR / ENABLE | 21 / 20 / 16 |
 | Stepper DIAG / UART TX / RX | 26 / 14 / 15 (wired, unused — see below) |
+| Stepper 2 STEP / DIR / ENABLE | 23 / 24 / 25 |
 | Fan PWM / tach | 18 / 17 |
 
 On the fan, the **yellow** lead is PWM control — not blue, which is what the usual 4-pin PC fan
@@ -70,7 +87,7 @@ ExamScan/
 ├── hardware/
 │   ├── camera.py       # Camera streaming and capture
 │   ├── fan.py          # PWM fan and tachometer (raw pigpio hardware PWM)
-│   ├── motor.py        # DC motor (page wheel) and stepper motor
+│   ├── motor.py        # Stepper motor (step/dir)
 │   └── servo.py        # Servo control (page drop, clamps)
 ├── tests/              # Test suite (runs without hardware)
 ├── runs/               # Saved runs (auto-created)
@@ -105,17 +122,31 @@ doesn't specify a count. It applies live — no restart needed.
 
 | Field | Controls |
 |---|---|
-| `motor.default_degrees` | How far the stepper turns per page, and back again |
-| `motor.default_clockwise` | Direction of the outward turn; the return is the opposite |
-| `dc_motor.default_speed` / `default_turn_seconds` | How hard and how long the wheel spins |
-| `dc_motor.default_forward` | Wheel direction |
+| `motor.page_turn_degrees` | How far each motor goes out before the shared leg |
+| `motor.shared_degrees` | The leg both motors turn together in phase 12 |
+| `motor.return_short_degrees` | How far the final return stops short of home; 0 for an exact round trip |
+| `motor.default_clockwise` | Direction of the outward turn; returns are the opposite |
+| `motor2.*` | Second stepper on GPIO 23/24/25, full step. Same page-turn keys as `motor` |
 | `servos.page_drop.down_angle` / `up_angle` | Where the arm rests down and clear |
+| `servos.page_clamp_*.contact_angle` / `hold_angle` | Where a clamp seats, and where it holds |
+| `servos.page_clamp_*.use_hold` | False drops the clamp and lets it go limp instead of holding |
+| `servos.*.max_hold_seconds` | Cut-off for a hold, so a servo cannot stay stalled |
+| `fan.duty_pct` / `fan.spinup_seconds` | Duty during the page turn, and the wait for it to reach speed |
 | `fan.min_start_duty_pct` | Floor applied to any non-zero duty so the fan actually spins up |
 | `fan.tach_pulses_per_rev` | Tach pulses per revolution, used to convert edges to RPM |
 | `workflow.*_pause` | Settling time at each phase boundary |
+| `workflow.small_clamp_hold_seconds` | Dwell on the small clamp's first drop, before the fan starts |
 
-All apply live. The shipped `config.toml` carries values tuned on the rig, which are gentler than the
-schema defaults — a short 0.35s nudge of the wheel at speed 35 rather than 3 seconds at full tilt.
+All apply live. The shipped `config.toml` carries values tuned on the rig.
+
+### Servo holding force
+
+By default a servo detaches once it reaches its angle, so it goes limp and merely rests on the page.
+Passing `hold=True` to `set_angle()` keeps it powered so it actually grips.
+
+The page turn uses this for both clamps, via their `use_hold` setting. A held
+servo draws near-stall current and warms up, so `max_hold_seconds` arms a timer that releases it if
+no lift arrives. Lifting the servo cancels that timer, so the normal path never waits for it.
 
 ### Stepper driver
 
@@ -204,7 +235,7 @@ never speeds up partway.
 ### Reversed servos
 
 `min_angle` may be set **greater than** `max_angle` to mirror a servo's rotation — which is what
-`page_clamp_left` does, since the clamps are mirrored hardware and would otherwise open when the
+`page_clamp_big` does, since the clamps are mirrored hardware and would otherwise open when the
 other closes. `down_angle` and `up_angle` stay the same numbers on both sides, so nothing downstream
 has to know which side it's driving.
 
@@ -216,7 +247,7 @@ Changing this on an already-mounted servo moves where commanded `0` sits physica
 The fan needs a 25 kHz PWM carrier, which is far above what the pigpio daemon's software PWM can
 hold steady. `hardware/fan.py` therefore talks to `pigpio` directly and calls `hardware_PWM()` on
 GPIO18 — one of the two pins wired to the SoC's real PWM peripheral — rather than going through
-`gpiozero` like the servos and DC motor do. This is why `page_clamp_right` sits on GPIO27: it was
+`gpiozero` like the servos do. This is why `page_clamp_small` sits on GPIO27: it was
 moved off 18 to free the hardware PWM channel, and being a 50 Hz servo it does not care which pin
 it lands on.
 
@@ -365,7 +396,7 @@ servos are reachable only through the run actions below.
 | GET | `/api/runs` | List all runs, newest first — `{"runs": [...]}` |
 | GET | `/api/runs/{id}` | Run manifest |
 | POST | `/api/runs/{id}/capture` | Capture one page |
-| POST | `/api/runs/{id}/page-turn` | Servo down, wheel turn, servo up |
+| POST | `/api/runs/{id}/page-turn` | The sixteen-phase clamp, arm, fan and stepper sequence |
 | POST | `/api/runs/{id}/scan-step` | Capture, then turn the page |
 | POST | `/api/runs/{id}/auto-scan` | Scan N pages then complete. Optional body `{"pages": N}`; defaults to `workflow.default_pages` |
 | POST | `/api/runs/{id}/complete` | Close the run |
