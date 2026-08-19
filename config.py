@@ -46,6 +46,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_degrees": 190.0,
         "default_clockwise": True,
         "invert_direction": False,
+        "page_turn_degrees": 90.0,
+        "shared_degrees": 80.0,
+        "return_short_degrees": 10.0,
     },
     "motor2": {
         "step_pin": 23,
@@ -59,6 +62,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_degrees": 190.0,
         "default_clockwise": True,
         "invert_direction": False,
+        "page_turn_degrees": 90.0,
+        "shared_degrees": 80.0,
+        "return_short_degrees": 10.0,
     },
     "servos": {
         "page_drop": {
@@ -101,6 +107,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "max_hold_seconds": 10.0,
             "down_angle": 105,
             "up_angle": 0,
+            "contact_angle": 105,
+            "hold_angle": 102,
+            "use_hold": True,
             "default_settle_time": 0.4,
             "detach_after_move": True,
             "pin_factory": "pigpio",
@@ -123,6 +132,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "max_hold_seconds": 10.0,
             "down_angle": 105,
             "up_angle": 0,
+            "contact_angle": 88,
+            "hold_angle": 85,
+            "use_hold": True,
             "default_settle_time": 0.4,
             "detach_after_move": True,
             "pin_factory": "pigpio",
@@ -134,6 +146,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_start_duty_pct": 10,
         "tach_pin": 17,
         "tach_pulses_per_rev": 2,
+        "duty_pct": 100,
+        "spinup_seconds": 3.0,
     },
     "workflow": {
         "clamp_down_pause": 1.0,
@@ -141,6 +155,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "clamp_up_pause": 0.5,
         "stepper_pause": 1.0,
         "servo_up_pause": 1.0,
+        "small_clamp_hold_seconds": 5.0,
+        "motor_pause": 1.0,
         "default_pages": 7,
     },
 }
@@ -307,7 +323,7 @@ class ConfigManager:
         if not isinstance(servos, dict):
             raise ConfigError("section [servos] must be a table")
         # Both are driven by the page turn, so both must exist.
-        for required in ("page_drop", "page_clamp_big"):
+        for required in ("page_drop", "page_clamp_big", "page_clamp_small"):
             if required not in servos:
                 raise ConfigError(f"servos.{required} is required")
         for name, servo in servos.items():
@@ -321,6 +337,8 @@ class ConfigManager:
         # spin or whines audibly, so reject it here rather than at the hardware.
         self._require_int(fan, "frequency_hz", "fan", minimum=12000, maximum=50000)
         self._require_int(fan, "min_start_duty_pct", "fan", minimum=0, maximum=100)
+        self._require_int(fan, "duty_pct", "fan", minimum=0, maximum=100)
+        self._require_number(fan, "spinup_seconds", "fan", minimum=0)
         self._require_int(fan, "tach_pin", "fan", minimum=0)
         self._require_int(fan, "tach_pulses_per_rev", "fan", minimum=1)
 
@@ -384,6 +402,18 @@ class ConfigManager:
             raise ConfigError(f"{name}.default_degrees must be greater than 0")
         self._require_bool(motor, "default_clockwise", name)
         self._require_bool(motor, "invert_direction", name)
+        self._require_number(motor, "page_turn_degrees", name, minimum=0)
+        self._require_number(motor, "shared_degrees", name, minimum=0)
+        self._require_number(motor, "return_short_degrees", name, minimum=0)
+        # The final return unwinds everything the motor went out, so a shortfall
+        # bigger than that would drive it backwards past its start instead of
+        # stopping short of it.
+        outward = motor["page_turn_degrees"] + motor["shared_degrees"]
+        if motor["return_short_degrees"] > outward:
+            raise ConfigError(
+                f"{name}.return_short_degrees ({motor['return_short_degrees']}) "
+                f"cannot exceed the {outward} degrees the motor goes out"
+            )
 
     def _validate_servo(self, name: str, servo: dict[str, Any]) -> None:
         section = f"servos.{name}"
@@ -404,6 +434,21 @@ class ConfigManager:
         self._require_number(servo, "max_hold_seconds", section, minimum=0)
         if servo["max_hold_seconds"] <= 0:
             raise ConfigError(f"{section}.max_hold_seconds must be greater than 0")
+        # Clamps seat at contact_angle then ease back to hold_angle. Only the
+        # clamps carry them, so they are checked when present rather than
+        # required of every servo.
+        if "contact_angle" in servo or "hold_angle" in servo:
+            self._require_number(servo, "contact_angle", section)
+            self._require_number(servo, "hold_angle", section)
+            self._require_bool(servo, "use_hold", section)
+            low = min(servo["min_angle"], servo["max_angle"])
+            high = max(servo["min_angle"], servo["max_angle"])
+            for key in ("contact_angle", "hold_angle"):
+                if not low <= servo[key] <= high:
+                    raise ConfigError(
+                        f"{section}.{key} ({servo[key]}) is outside the servo's "
+                        f"range {low} to {high}"
+                    )
         # Strictly positive, or the ramp loop in ServoMotor._steps would never
         # close the gap. Set the delays to 0 for full speed instead.
         for key in ("step_degrees", "approach_step_degrees", "departure_step_degrees"):
@@ -471,6 +516,9 @@ default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = true
 invert_direction = false
+page_turn_degrees = 90.0
+shared_degrees = 80.0
+return_short_degrees = 10.0
 
 [motor2]
 step_pin = 23
@@ -482,6 +530,9 @@ fast_delay = 0.001
 default_degrees = 190.0
 default_clockwise = true
 invert_direction = false
+page_turn_degrees = 90.0
+shared_degrees = 80.0
+return_short_degrees = 10.0
 
 [servos.page_drop]
 pin = 12
@@ -523,6 +574,9 @@ departure_step_delay = 0.08
 max_hold_seconds = 10.0
 down_angle = 105
 up_angle = 0
+contact_angle = 105
+hold_angle = 102
+use_hold = true
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
@@ -545,6 +599,9 @@ departure_step_delay = 0.08
 max_hold_seconds = 10.0
 down_angle = 105
 up_angle = 0
+contact_angle = 88
+hold_angle = 85
+use_hold = true
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
@@ -555,6 +612,8 @@ frequency_hz = 25000
 min_start_duty_pct = 10
 tach_pin = 17
 tach_pulses_per_rev = 2
+duty_pct = 100
+spinup_seconds = 3.0
 
 [workflow]
 clamp_down_pause = 1.0
@@ -562,5 +621,7 @@ servo_down_pause = 2.0
 clamp_up_pause = 0.5
 stepper_pause = 1.0
 servo_up_pause = 1.0
+small_clamp_hold_seconds = 5.0
+motor_pause = 1.0
 default_pages = 7
 """

@@ -135,3 +135,64 @@ def test_valid_upload_creates_backup(config_manager, config_dict):
 
     assert config["workflow"]["servo_up_pause"] == 2.5
     assert list(config_manager.path.parent.glob("config.toml.*.bak"))
+
+
+def test_missing_small_clamp_servo_is_rejected(config_manager, config):
+    """The page turn drives it now, so it is no longer optional."""
+    changed = deepcopy(config)
+    changed["servos"].pop("page_clamp_small")
+
+    with pytest.raises(ConfigError, match="servos.page_clamp_small is required"):
+        config_manager._validate(changed)
+
+
+def test_hold_angle_outside_the_servo_range_is_rejected(config_manager, config):
+    """gpiozero raises mid-move on an out-of-range angle, with the arm down.
+
+    Caught at config time instead, the same way the bench script checks up
+    front rather than discovering it halfway through a page turn.
+    """
+    changed = deepcopy(config)
+    changed["servos"]["page_clamp_small"]["hold_angle"] = 200
+
+    with pytest.raises(ConfigError, match="hold_angle"):
+        config_manager._validate(changed)
+
+
+def test_contact_angle_outside_the_servo_range_is_rejected(config_manager, config):
+    changed = deepcopy(config)
+    changed["servos"]["page_clamp_big"]["contact_angle"] = -5
+
+    with pytest.raises(ConfigError, match="contact_angle"):
+        config_manager._validate(changed)
+
+
+def test_return_shortfall_larger_than_the_outward_run_is_rejected(
+    config_manager, config
+):
+    """A shortfall past the outward total would drive the wheel back past home."""
+    changed = deepcopy(config)
+    motor = changed["motor"]
+    motor["return_short_degrees"] = (
+        motor["page_turn_degrees"] + motor["shared_degrees"] + 1
+    )
+
+    with pytest.raises(ConfigError, match="return_short_degrees"):
+        config_manager._validate(changed)
+
+
+def test_zero_return_shortfall_is_allowed(config_manager, config):
+    """0 is the exact round trip, and must stay reachable."""
+    changed = deepcopy(config)
+    changed["motor"]["return_short_degrees"] = 0
+    changed["motor2"]["return_short_degrees"] = 0
+
+    config_manager._validate(changed)
+
+
+def test_fan_duty_outside_percent_range_is_rejected(config_manager, config):
+    changed = deepcopy(config)
+    changed["fan"]["duty_pct"] = 150
+
+    with pytest.raises(ConfigError, match="duty_pct"):
+        config_manager._validate(changed)
