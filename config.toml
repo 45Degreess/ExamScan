@@ -35,6 +35,21 @@ default_degrees = 190.0
 default_clockwise = true
 invert_direction = false
 
+[motor2]
+step_pin = 24
+dir_pin = 23                         
+enable_pin = 25
+# DRV8825 with MS1/MS2/MS3 unconnected: full step, 200 pulses per revolution.
+# The TMC2209 on [motor] runs 1/8 microstepping, hence its 1600.
+steps_per_rev = 200
+step_delay = 0.004
+fast_delay = 0.001
+default_degrees = 190.0
+default_clockwise = true
+# This motor's coils are wired so DIR high is clockwise, the opposite of
+# [motor]. Inverting here means "clockwise" means clockwise for both.
+invert_direction = true
+
 [servos.page_drop]
 pin = 12
 min_angle = 0

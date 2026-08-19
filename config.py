@@ -47,6 +47,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_clockwise": True,
         "invert_direction": False,
     },
+    "motor2": {
+        "step_pin": 23,
+        "dir_pin": 24,
+        "enable_pin": 25,
+        # DRV8825 with MS1/MS2/MS3 unconnected: full step, 200 per revolution.
+        # The TMC2209 on [motor] runs 1/8 microstepping, hence its 1600.
+        "steps_per_rev": 200,
+        "step_delay": 0.002,
+        "fast_delay": 0.001,
+        "default_degrees": 190.0,
+        "default_clockwise": True,
+        "invert_direction": False,
+    },
     "servos": {
         "page_drop": {
             "pin": 12,
@@ -134,6 +147,7 @@ REQUIRED_SECTIONS = set(DEFAULT_CONFIG)
 LIVE_SECTIONS = {"server", "paths", "workflow"}
 RESTART_FIELDS = {
     "motor": {"step_pin", "dir_pin", "enable_pin"},
+    "motor2": {"step_pin", "dir_pin", "enable_pin"},
     "fan": {"pin", "tach_pin"},
 }
 
@@ -228,6 +242,13 @@ class ConfigManager:
         ):
             applied.append("motor.defaults")
         if (
+            old_config["motor2"]["default_degrees"]
+            != new_config["motor2"]["default_degrees"]
+            or old_config["motor2"]["default_clockwise"]
+            != new_config["motor2"]["default_clockwise"]
+        ):
+            applied.append("motor2.defaults")
+        if (
             old_config["fan"]["min_start_duty_pct"]
             != new_config["fan"]["min_start_duty_pct"]
             or old_config["fan"]["tach_pulses_per_rev"]
@@ -271,18 +292,13 @@ class ConfigManager:
         ):
             self._require_number(camera, key, "camera", minimum=0)
 
-        motor = config["motor"]
-        for key in ("step_pin", "dir_pin", "enable_pin"):
-            self._require_int(motor, key, "motor", minimum=0)
-        self._require_int(motor, "steps_per_rev", "motor", minimum=1)
-        self._require_number(motor, "step_delay", "motor", minimum=0)
-        self._require_number(motor, "fast_delay", "motor", minimum=0)
-        self._require_number(motor, "default_turn_seconds", "motor", minimum=0)
-        self._require_number(motor, "default_degrees", "motor", minimum=0)
-        if motor["default_degrees"] <= 0:
-            raise ConfigError("motor.default_degrees must be greater than 0")
-        self._require_bool(motor, "default_clockwise", "motor")
-        self._require_bool(motor, "invert_direction", "motor")
+        self._validate_stepper("motor", config["motor"])
+        self._validate_stepper("motor2", config["motor2"])
+
+        # Only [motor] paces the page turn, so this one is not shared.
+        self._require_number(
+            config["motor"], "default_turn_seconds", "motor", minimum=0
+        )
 
         servos = config["servos"]
         if not isinstance(servos, dict):
@@ -352,6 +368,19 @@ class ConfigManager:
             raise ConfigError(f"{name}.{key} must be a number")
         if minimum is not None and value < minimum:
             raise ConfigError(f"{name}.{key} must be at least {minimum}")
+
+    def _validate_stepper(self, name: str, motor: dict[str, Any]) -> None:
+        """Shared by [motor] and [motor2] - both drive a step/dir stepper."""
+        for key in ("step_pin", "dir_pin", "enable_pin"):
+            self._require_int(motor, key, name, minimum=0)
+        self._require_int(motor, "steps_per_rev", name, minimum=1)
+        self._require_number(motor, "step_delay", name, minimum=0)
+        self._require_number(motor, "fast_delay", name, minimum=0)
+        self._require_number(motor, "default_degrees", name, minimum=0)
+        if motor["default_degrees"] <= 0:
+            raise ConfigError(f"{name}.default_degrees must be greater than 0")
+        self._require_bool(motor, "default_clockwise", name)
+        self._require_bool(motor, "invert_direction", name)
 
     def _validate_servo(self, name: str, servo: dict[str, Any]) -> None:
         section = f"servos.{name}"
@@ -433,6 +462,17 @@ steps_per_rev = 1600
 step_delay = 0.005
 fast_delay = 0.001
 default_turn_seconds = 3.0
+default_degrees = 190.0
+default_clockwise = true
+invert_direction = false
+
+[motor2]
+step_pin = 23
+dir_pin = 24
+enable_pin = 25
+steps_per_rev = 200
+step_delay = 0.002
+fast_delay = 0.001
 default_degrees = 190.0
 default_clockwise = true
 invert_direction = false
