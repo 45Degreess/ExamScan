@@ -154,6 +154,7 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
     output_dir.mkdir(parents=True, exist_ok=True)
 
     student_info: dict | None = None
+    cover_confidences: dict | None = None
     page_paths: list[Path] = []
     page_counter = 0
     total = len(image_files)
@@ -177,6 +178,7 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
             try:
                 extraction = _extract_cover_fields(warped, COVER_FIELDS)
                 student_info = extraction["fields"]
+                cover_confidences = extraction["confidences"]
                 print(f"[{index}/{total}] {img_path.name}: OCR done -> {student_info}")
             except Exception as exc:
                 student_info = {"error": str(exc)}
@@ -222,6 +224,7 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
         "output_dir": str(output_dir),
         "num_pages": len(page_paths),
         "student_info": student_info or {},
+        "confidence": _identity_confidence(cover_confidences),
         "pdf_filename": pdf_path.name,
         "page_files": [p.name for p in page_paths],
     }
@@ -265,6 +268,22 @@ def _student_status(row: dict) -> str:
     if row["scanned"]:
         return "scanned" if row["expected"] else "unexpected"
     return "missing" if row["expected"] else "excluded"
+
+
+_IDENTITY_CONF_FIELDS = ("Emplid", "Course Code")
+
+
+def _identity_confidence(confidences: dict | None) -> float | None:
+    """Scalar scan confidence = min of the identity-critical field scores.
+    None when there was no cover extraction at all; a real 0.0 is kept."""
+    if not confidences:
+        return None
+    vals = [
+        float(confidences[k])
+        for k in _IDENTITY_CONF_FIELDS
+        if isinstance(confidences.get(k), (int, float))
+    ]
+    return min(vals) if vals else None
 
 
 @router.get("/health")
@@ -755,6 +774,66 @@ async def session_reconciliation(session_code: str):
     })
 
 
+@router.get("/sessions/{session_code}/review")
+async def session_review(session_code: str):
+    """
+    Post-processing feed: every roster row plus every scanned booklet that
+    matched nobody, each with a derived `status` and the booklet's OCR
+    confidence, ordered unexpected -> missing -> scanned -> excluded.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    items = await run_in_threadpool(db.get_session_review, session["id"])
+    return JSONResponse({
+        "session_code": session_code,
+        "session_status": session.get("status", "open"),
+        "items": items,
+    })
+
+
+@router.get("/sessions/{session_code}/booklets/{booklet_id}/pdf")
+async def get_booklet_pdf(session_code: str, booklet_id: int):
+    """Stream a booklet's combined PDF inline (opens in a browser tab)."""
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    booklet = await run_in_threadpool(db.get_booklet, session["id"], booklet_id)
+    if booklet is None:
+        raise HTTPException(status_code=404, detail="Unknown booklet for this session.")
+
+    pdf_path = Path(booklet["pdf_path"])
+    if not pdf_path.is_file():
+        raise HTTPException(status_code=404, detail="Booklet PDF not found on disk.")
+
+    filename = f"{session_code}_{booklet['emplid'] or booklet_id}.pdf"
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@router.post("/sessions/{session_code}/finalize")
+async def finalize_session(
+    session_code: str,
+    excluded: list[str] = Form(default=[]),
+):
+    """
+    Confirm a session's results: apply the final `expected` flags (everyone
+    expected, then the `excluded` usernames not) and mark the session
+    finalized. Advisory only — nothing is locked — and idempotent.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    summary = await run_in_threadpool(db.finalize_session, session["id"], excluded)
+    return JSONResponse({"session_code": session_code, **summary})
+
+
 @router.post("/sessions/{session_code}/booklets")
 async def add_booklet(
     session_code: str,
@@ -798,6 +877,7 @@ async def add_booklet(
             verified,
             result["num_pages"],
             str(final_dir / "combined.pdf"),
+            result.get("confidence"),
         )
         booklet_id = booklet["booklet_id"]
 

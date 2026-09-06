@@ -37,6 +37,20 @@ class DuplicateEmplidError(Exception):
     """Raised when (session_id, emplid) already exists."""
 
 
+def _add_col_if_missing(conn, table: str, column: str, ddl: str) -> None:
+    """Idempotent `ALTER TABLE ... ADD COLUMN` for databases created by an
+    earlier schema version — there's no migration tooling. `ddl` is the full
+    statement to run when the column is absent."""
+    has_col = conn.execute(text("""
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = :table
+          AND column_name = :column
+    """), {"table": table, "column": column}).scalar()
+    if not has_col:
+        conn.execute(text(ddl))
+
+
 def init_db() -> None:
     with _engine.begin() as conn:
         conn.execute(text("""
@@ -46,6 +60,8 @@ def init_db() -> None:
                 operator_name VARCHAR(128) NOT NULL,
                 test_date DATE NOT NULL,
                 course_code VARCHAR(64) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'open',
+                finalized_at DATETIME NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """))
@@ -74,6 +90,7 @@ def init_db() -> None:
                 course_code_scanned VARCHAR(64) NULL,
                 course_code_verified BOOLEAN NOT NULL DEFAULT FALSE,
                 num_pages INT NULL,
+                confidence FLOAT NULL,
                 pdf_path VARCHAR(512) NOT NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES scan_sessions(id),
@@ -81,17 +98,21 @@ def init_db() -> None:
                 KEY idx_booklets_student (student_id)
             )
         """))
-        # `booklets` predates the student_id column on databases created by an
-        # earlier version; add it in place since there's no migration tooling.
-        has_col = conn.execute(text("""
+        # Columns added after the tables' first release; back-fill in place
+        # since there's no migration tooling.
+        if not conn.execute(text("""
             SELECT COUNT(*) FROM information_schema.columns
             WHERE table_schema = DATABASE()
-              AND table_name = 'booklets'
-              AND column_name = 'student_id'
-        """)).scalar()
-        if not has_col:
+              AND table_name = 'booklets' AND column_name = 'student_id'
+        """)).scalar():
             conn.execute(text("ALTER TABLE booklets ADD COLUMN student_id INT NULL"))
             conn.execute(text("ALTER TABLE booklets ADD KEY idx_booklets_student (student_id)"))
+        _add_col_if_missing(conn, "booklets", "confidence",
+                            "ALTER TABLE booklets ADD COLUMN confidence FLOAT NULL")
+        _add_col_if_missing(conn, "scan_sessions", "status",
+                            "ALTER TABLE scan_sessions ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'open'")
+        _add_col_if_missing(conn, "scan_sessions", "finalized_at",
+                            "ALTER TABLE scan_sessions ADD COLUMN finalized_at DATETIME NULL")
 
 
 def create_session(session_code: str, operator_name: str, test_date_str: str, course_code: str) -> int:
@@ -130,11 +151,15 @@ def insert_booklet(
     verified: bool,
     num_pages: int | None,
     pdf_path: str,
+    confidence: float | None = None,
 ) -> dict:
     """
     Insert a booklet and try to link it to an expected class-list student
     (session_students.username == emplid, case-insensitive). When a match is
     found, booklets.student_id is set and the roster row is marked scanned.
+
+    `confidence` is a 0-1 scalar OCR confidence for the cover fields, or None
+    when no cover page was extracted.
 
     Returns {"booklet_id": int, "student_id": int | None} — student_id is None
     for a booklet whose emplid isn't on the class list (flagged for review).
@@ -144,9 +169,11 @@ def insert_booklet(
             result = conn.execute(
                 text("""
                     INSERT INTO booklets
-                        (session_id, emplid, course_code_scanned, course_code_verified, num_pages, pdf_path)
+                        (session_id, emplid, course_code_scanned, course_code_verified,
+                         num_pages, confidence, pdf_path)
                     VALUES
-                        (:session_id, :emplid, :course_code_scanned, :verified, :num_pages, :pdf_path)
+                        (:session_id, :emplid, :course_code_scanned, :verified,
+                         :num_pages, :confidence, :pdf_path)
                 """),
                 {
                     "session_id": session_id,
@@ -154,6 +181,7 @@ def insert_booklet(
                     "course_code_scanned": course_code_scanned,
                     "verified": verified,
                     "num_pages": num_pages,
+                    "confidence": confidence,
                     "pdf_path": pdf_path,
                 },
             )
@@ -327,3 +355,155 @@ def set_students_expected(session_id: int, excluded_usernames: list[str]) -> dic
             )
             excluded = result.rowcount
     return {"expected": total - excluded, "excluded": excluded}
+
+
+def _review_status(scanned: bool, expected: bool) -> str:
+    """Derived status for a roster row (mirrors routes._student_status)."""
+    if scanned:
+        return "scanned" if expected else "unexpected"
+    return "missing" if expected else "excluded"
+
+
+_REVIEW_RANK = {"unexpected": 0, "missing": 1, "scanned": 2, "excluded": 3}
+
+
+def get_session_review(session_id: int) -> list[dict]:
+    """
+    The post-processing feed for a session: every roster row plus every
+    scanned booklet that matched nobody, each carrying a derived `status`
+    and the booklet's OCR confidence. Ordered unexpected -> missing ->
+    scanned -> excluded, then by name.
+    """
+    with _engine.connect() as conn:
+        student_rows = conn.execute(
+            text("""
+                SELECT ss.id AS student_id, ss.name, ss.username,
+                       ss.expected, ss.scanned, ss.booklet_id, ss.scanned_at,
+                       b.emplid AS b_emplid, b.confidence,
+                       b.course_code_scanned, b.course_code_verified, b.num_pages
+                FROM session_students ss
+                LEFT JOIN booklets b ON b.id = ss.booklet_id
+                WHERE ss.session_id = :sid
+            """),
+            {"sid": session_id},
+        ).mappings().all()
+        booklet_rows = conn.execute(
+            text("""
+                SELECT id, emplid, confidence, course_code_scanned,
+                       course_code_verified, num_pages, created_at
+                FROM booklets
+                WHERE session_id = :sid AND student_id IS NULL
+            """),
+            {"sid": session_id},
+        ).mappings().all()
+
+    items: list[dict] = []
+    for r in student_rows:
+        expected, scanned = bool(r["expected"]), bool(r["scanned"])
+        items.append({
+            "row_key": f"s{r['student_id']}",
+            "kind": "student",
+            "student_id": r["student_id"],
+            "booklet_id": r["booklet_id"],
+            "name": r["name"],
+            "username": r["username"],
+            "emplid": r["b_emplid"],
+            "status": _review_status(scanned, expected),
+            "expected": expected,
+            "scanned": scanned,
+            "confidence": float(r["confidence"]) if r["confidence"] is not None else None,
+            "course_code_scanned": r["course_code_scanned"],
+            "course_code_verified": (
+                bool(r["course_code_verified"]) if r["course_code_verified"] is not None else None
+            ),
+            "num_pages": r["num_pages"],
+            "scanned_at": r["scanned_at"].isoformat() if r["scanned_at"] else None,
+        })
+    for r in booklet_rows:
+        items.append({
+            "row_key": f"b{r['id']}",
+            "kind": "booklet",
+            "student_id": None,
+            "booklet_id": r["id"],
+            "name": r["emplid"] or "Unknown",
+            "username": None,
+            "emplid": r["emplid"],
+            "status": "unexpected",
+            "expected": False,
+            "scanned": True,
+            "confidence": float(r["confidence"]) if r["confidence"] is not None else None,
+            "course_code_scanned": r["course_code_scanned"],
+            "course_code_verified": (
+                bool(r["course_code_verified"]) if r["course_code_verified"] is not None else None
+            ),
+            "num_pages": r["num_pages"],
+            "scanned_at": r["created_at"].isoformat() if r["created_at"] else None,
+        })
+
+    items.sort(key=lambda it: (_REVIEW_RANK.get(it["status"], 99), (it["name"] or "").lower()))
+    return items
+
+
+def get_booklet(session_id: int, booklet_id: int) -> dict | None:
+    """A single booklet scoped to its session, or None."""
+    with _engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT id, emplid, pdf_path, num_pages
+                FROM booklets
+                WHERE id = :bid AND session_id = :sid
+            """),
+            {"bid": booklet_id, "sid": session_id},
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def finalize_session(session_id: int, excluded_usernames: list[str]) -> dict:
+    """
+    Confirm a session's results: apply the final `expected` flags (everyone
+    TRUE, then `excluded_usernames` FALSE) and stamp the session
+    `status = 'finalized'`. One transaction, idempotent — `finalized_at` is
+    only set the first time.
+
+    Returns a counts summary: status, expected, excluded, scanned, missing,
+    unexpected.
+    """
+    excluded_keys = sorted({u.strip().upper() for u in excluded_usernames if u.strip()})
+    with _engine.begin() as conn:
+        conn.execute(
+            text("UPDATE session_students SET expected = TRUE WHERE session_id = :sid"),
+            {"sid": session_id},
+        )
+        if excluded_keys:
+            conn.execute(
+                text("""
+                    UPDATE session_students SET expected = FALSE
+                    WHERE session_id = :sid AND UPPER(username) IN :keys
+                """).bindparams(bindparam("keys", expanding=True)),
+                {"sid": session_id, "keys": excluded_keys},
+            )
+        conn.execute(
+            text("""
+                UPDATE scan_sessions
+                SET status = 'finalized', finalized_at = COALESCE(finalized_at, NOW())
+                WHERE id = :sid
+            """),
+            {"sid": session_id},
+        )
+        rows = conn.execute(
+            text("SELECT expected, scanned FROM session_students WHERE session_id = :sid"),
+            {"sid": session_id},
+        ).mappings().all()
+        unexpected = conn.execute(
+            text("SELECT COUNT(*) FROM booklets WHERE session_id = :sid AND student_id IS NULL"),
+            {"sid": session_id},
+        ).scalar() or 0
+
+    return {
+        "status": "finalized",
+        "expected": sum(1 for r in rows if r["expected"]),
+        "excluded": sum(1 for r in rows if not r["expected"]),
+        "scanned": sum(1 for r in rows if r["expected"] and r["scanned"]),
+        "missing": sum(1 for r in rows if r["expected"] and not r["scanned"]),
+        "unexpected": int(unexpected),
+    }

@@ -60,6 +60,37 @@ export async function setExpectedStudents(sessionCode, excludedUsernames) {
   return res.json();
 }
 
+// GET /sessions/{code}/review — real endpoint (software/routes.py). Returns
+// { session_code, session_status, items: [{ row_key, kind, student_id,
+// booklet_id, name, username, emplid, status, expected, scanned, confidence,
+// course_code_scanned, course_code_verified, num_pages, scanned_at }] },
+// already sorted unexpected → missing → scanned → excluded.
+export async function getSessionReview(sessionCode) {
+  const res = await apiFetch(`/sessions/${encodeURIComponent(sessionCode)}/review`);
+  return res.json();
+}
+
+// POST /sessions/{code}/finalize — real endpoint (software/routes.py).
+// Persists the final expected flags (roster usernames in `excludedUsernames`
+// → expected=0) AND marks the session finalized, in one request. Advisory
+// only (nothing is locked) and idempotent. Returns { session_code, status,
+// expected, excluded, scanned, missing, unexpected }.
+export async function finalizeSession(sessionCode, excludedUsernames = []) {
+  const fd = new FormData();
+  for (const username of excludedUsernames) fd.append("excluded", username);
+  const res = await apiFetch(`/sessions/${encodeURIComponent(sessionCode)}/finalize`, {
+    method: "POST",
+    body: fd,
+  });
+  return res.json();
+}
+
+// Direct URL to a booklet's combined PDF (opened in a new tab, not via
+// apiFetch). GET /sessions/{code}/booklets/{id}/pdf streams it inline.
+export function bookletPdfUrl(sessionCode, bookletId) {
+  return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}/pdf`;
+}
+
 // POST /detect-preview — real endpoint (software/routes.py:249-270). Used by
 // the Debug page's "Outline Page Frame Only" button, which is a genuine
 // existing backend capability so it is wired for real rather than mocked.

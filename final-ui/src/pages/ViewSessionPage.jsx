@@ -130,6 +130,9 @@ export default function ViewSessionPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: space.lg }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{currentSession.sessionCode}</h1>
         <div style={{ display: "flex", gap: space.sm }}>
+          <Button variant="primary" onClick={() => navigate(`/sessions/${sessionId}/review`)}>
+            Review &amp; finalize
+          </Button>
           {currentSession.studentListName && (
             <Button variant="subtle" onClick={() => navigate(`/sessions/${sessionId}/prepare`)}>
               Edit class list
