@@ -66,58 +66,72 @@ def _extract_cover_fields(canonical: np.ndarray, fields: dict[str, tuple[int, in
     `fields` maps field name -> (x, y, w, h) region on the canonical image,
     e.g. COVER_FIELDS or MCQ_COVER_FIELDS, so this can be reused across page layouts.
 
-    Returns a dict with 'fields', 'crops', 'scan_dimensions', and 'regions_used',
-    matching the /extract-cover response shape.
+    Returns a dict with 'fields', 'crops', 'confidences', 'scan_dimensions', and
+    'regions_used', matching the /extract-cover response shape. 'confidences' maps
+    each field to a 0-1 OCR confidence score (per-digit scores for "Emplid", under
+    the key "Emplid_digits").
     """
     denoised = cv2.fastNlMeansDenoisingColored(canonical, h=10, hColor=10)
 
     extracted: dict[str, str] = {}
     crops_b64: dict[str, str] = {}
+    confidences: dict[str, float] = {}
     for field, (x, y, w, h) in fields.items():
         crop = denoised[y : y + h, x : x + w]
         if crop.size == 0:
             extracted[field] = ""
             crops_b64[field] = ""
+            confidences[field] = 0.0
             continue
         if field == "Emplid":
             digit_crops = _split_emplid_digits(crop)
             digit_chars = []
+            digit_confidences = []
             processed_digits = []
             for dc in digit_crops:
                 if dc.size == 0:
                     digit_chars.append("")
+                    digit_confidences.append(0.0)
                     continue
                 ocr_input = _preprocess_for_ocr(dc)
                 processed_digits.append(ocr_input)
                 try:
-                    raw = _ocr_trocr(ocr_input)
+                    raw, conf = _ocr_trocr(ocr_input)
                     digits_only = re.sub(r"\D", "", raw)
                     digit_chars.append(digits_only[:1] if digits_only else "?")
+                    digit_confidences.append(conf)
                 except Exception:
                     digit_chars.append("?")
+                    digit_confidences.append(0.0)
             extracted[field] = "".join(digit_chars)
             crops_b64[field] = _encode_b64(cv2.hconcat(processed_digits)) if processed_digits else ""
+            confidences["Emplid_digits"] = digit_confidences
+            confidences[field] = min(digit_confidences) if digit_confidences else 0.0
             continue
         if field == "Course Code":
             ocr_input = _preprocess_for_ocr(crop)
             crops_b64[field] = _encode_b64(ocr_input)
             try:
-                raw = _ocr_trocr(ocr_input)
+                raw, conf = _ocr_trocr(ocr_input)
                 extracted[field] = re.sub(r"[^A-Za-z0-9]", "", raw)
+                confidences[field] = conf
             except Exception as exc:
                 extracted[field] = f"[OCR error: {exc}]"
+                confidences[field] = 0.0
             continue
 
         ocr_input = _preprocess_for_ocr(crop)
         crops_b64[field] = _encode_b64(ocr_input)
         try:
-            extracted[field] = _ocr_trocr(ocr_input)
+            extracted[field], confidences[field] = _ocr_trocr(ocr_input)
         except Exception as exc:
             extracted[field] = f"[OCR error: {exc}]"
+            confidences[field] = 0.0
 
     return {
         "fields": extracted,
         "crops": crops_b64,
+        "confidences": confidences,
         "scan_dimensions": {"width": A4_WIDTH, "height": A4_HEIGHT},
         "regions_used": {k: list(v) for k, v in fields.items()},
     }

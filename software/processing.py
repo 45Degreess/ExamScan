@@ -107,8 +107,13 @@ def _preprocess_for_ocr(crop: np.ndarray) -> np.ndarray:
     )
 
 
-def _ocr_trocr(crop: np.ndarray) -> str:
-    """TrOCR on a numpy crop (grayscale or BGR). Best for handwritten text."""
+def _ocr_trocr(crop: np.ndarray) -> tuple[str, float]:
+    """TrOCR on a numpy crop (grayscale or BGR). Best for handwritten text.
+
+    Returns (text, confidence), where confidence is the geometric mean of the
+    per-token softmax probabilities of the generated sequence (0-1).
+    """
+    import torch
     from PIL import Image as PILImage
     processor, model = _get_trocr()
     if crop.ndim == 2:
@@ -116,8 +121,24 @@ def _ocr_trocr(crop: np.ndarray) -> str:
     else:
         pil = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
     pixel_values = processor(pil, return_tensors="pt").pixel_values.to(_get_trocr_device())
-    ids = model.generate(pixel_values, max_length=50, num_beams=1)
-    return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+    outputs = model.generate(
+        pixel_values,
+        max_length=50,
+        num_beams=1,
+        output_scores=True,
+        return_dict_in_generate=True,
+    )
+    text = processor.batch_decode(outputs.sequences, skip_special_tokens=True)[0].strip()
+
+    token_probs = []
+    for step_scores, token_id in zip(outputs.scores, outputs.sequences[0, 1:]):
+        if token_id == processor.tokenizer.pad_token_id:
+            continue
+        step_probs = torch.softmax(step_scores[0], dim=-1)
+        token_probs.append(step_probs[token_id].item())
+    confidence = float(np.prod(token_probs) ** (1.0 / len(token_probs))) if token_probs else 0.0
+
+    return text, confidence
 
 
 # ── QR / booklet helpers ─────────────────────────────────────────────────────
