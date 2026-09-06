@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import io
 import json
 import re
@@ -224,6 +225,43 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
         "pdf_filename": pdf_path.name,
         "page_files": [p.name for p in page_paths],
     }
+
+
+def _parse_class_list(raw: bytes) -> list[dict]:
+    """
+    Parse a class-list CSV export into a list of student dicts.
+
+    Columns by position: Name, Pronouns, UserName, Email, Role, LastAccessed.
+    Only 'Student' rows are kept, and only Name / UserName / Role are retained
+    — UserName is the student/Emplid number used to match scanned booklets to
+    the roster. A leading header row is detected and skipped; duplicate
+    usernames collapse to their first occurrence.
+    """
+    reader = csv.reader(io.StringIO(raw.decode("utf-8-sig")))
+    students: list[dict] = []
+    seen: set[str] = set()
+    for i, row in enumerate(reader):
+        if len(row) < 5:
+            continue
+        name, _pronouns, username, _email, role = (cell.strip() for cell in row[:5])
+        if i == 0 and name.lower() == "name":
+            continue  # header row
+        if role.lower() != "student":
+            continue
+        if not username or username.upper() in seen:
+            continue
+        seen.add(username.upper())
+        students.append({"name": name, "username": username, "role": role})
+    return students
+
+
+def _student_status(row: dict) -> str:
+    """Derived roster status: 'scanned' (expected + a booklet matched),
+    'missing' (expected, no booklet yet), or 'unexpected' (a booklet matched
+    someone not on the class list)."""
+    if row["scanned"]:
+        return "scanned" if row["expected"] else "unexpected"
+    return "missing"
 
 
 @router.get("/health")
@@ -598,11 +636,17 @@ async def create_session(
     operator_name: str = Form(...),
     test_date: str = Form(...),
     course_code: str = Form(...),
+    class_list: UploadFile | None = File(default=None),
 ):
     """
     Start a scan session (course code, test date, operator) that persists
     for the lifetime of a scanning run. Booklets are then submitted against
     this session via POST /sessions/{session_code}/booklets.
+
+    An optional `class_list` CSV (Name, Pronouns, UserName, Email, Role,
+    LastAccessed) seeds the session's expected-student roster: 'Student' rows
+    only, storing Name / UserName / Role. It can also be uploaded later via
+    POST /sessions/{session_code}/class-list.
     """
     try:
         session_id = await run_in_threadpool(
@@ -613,7 +657,80 @@ async def create_session(
     except ValueError:
         raise HTTPException(status_code=400, detail="test_date must be in YYYY-MM-DD format.")
 
-    return JSONResponse({"session_id": session_id, "session_code": session_code})
+    students_imported = 0
+    if class_list is not None:
+        students = _parse_class_list(await class_list.read())
+        roster = await run_in_threadpool(db.import_session_students, session_id, students)
+        students_imported = roster["imported"]
+
+    return JSONResponse({
+        "session_id": session_id,
+        "session_code": session_code,
+        "students_imported": students_imported,
+    })
+
+
+@router.post("/sessions/{session_code}/class-list")
+async def import_class_list(session_code: str, class_list: UploadFile = File(...)):
+    """
+    Upload (or re-upload) the class-list CSV for an existing session.
+
+    Rows are upserted by username: a re-upload refreshes names/roles and
+    re-marks everyone as expected without losing scan progress. Booklets
+    already scanned in this session are re-checked against the new roster.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    students = _parse_class_list(await class_list.read())
+    roster = await run_in_threadpool(db.import_session_students, session["id"], students)
+    return JSONResponse({
+        "session_code": session_code,
+        "students_imported": roster["imported"],
+        "booklets_newly_matched": roster["matched"],
+    })
+
+
+@router.get("/sessions/{session_code}/students")
+async def list_session_students(session_code: str):
+    """
+    The expected-student roster for a session, each row tagged with a derived
+    `status`: 'missing', 'scanned', or 'unexpected'.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    rows = await run_in_threadpool(db.get_session_students, session["id"])
+    students = [{**r, "status": _student_status(r)} for r in rows]
+    return JSONResponse({"session_code": session_code, "students": students})
+
+
+@router.get("/sessions/{session_code}/reconciliation")
+async def session_reconciliation(session_code: str):
+    """
+    Expected-vs-scanned summary for a session: who on the class list still
+    hasn't been scanned, and which scanned booklets matched nobody.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    rows = await run_in_threadpool(db.get_session_students, session["id"])
+    unmatched = await run_in_threadpool(db.get_unmatched_booklets, session["id"])
+    missing = [
+        {"name": r["name"], "username": r["username"]}
+        for r in rows
+        if r["expected"] and not r["scanned"]
+    ]
+    return JSONResponse({
+        "session_code": session_code,
+        "expected_count": sum(1 for r in rows if r["expected"]),
+        "scanned_count": sum(1 for r in rows if r["expected"] and r["scanned"]),
+        "missing": missing,
+        "unmatched_booklets": unmatched,
+    })
 
 
 @router.post("/sessions/{session_code}/booklets")
@@ -651,7 +768,7 @@ async def add_booklet(
 
         final_dir = STORAGE_ROOT / session_code / (emplid or "unknown")
 
-        booklet_id = await run_in_threadpool(
+        booklet = await run_in_threadpool(
             db.insert_booklet,
             session["id"],
             emplid,
@@ -660,6 +777,7 @@ async def add_booklet(
             result["num_pages"],
             str(final_dir / "combined.pdf"),
         )
+        booklet_id = booklet["booklet_id"]
 
         if final_dir.exists():
             shutil.rmtree(final_dir)
@@ -676,5 +794,7 @@ async def add_booklet(
     return JSONResponse({
         "booklet_id": booklet_id,
         "verified": verified,
+        "matched_student_id": booklet["student_id"],
+        "on_class_list": booklet["student_id"] is not None,
         "student_info": student_info,
     })
