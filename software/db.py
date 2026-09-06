@@ -12,7 +12,7 @@ import os
 from datetime import date
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 load_dotenv()
@@ -294,3 +294,36 @@ def get_unmatched_booklets(session_id: int) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def set_students_expected(session_id: int, excluded_usernames: list[str]) -> dict:
+    """
+    Bulk-set the roster's `expected` flags for a session in one transaction:
+    everyone is marked `expected = TRUE`, then the given usernames (matched
+    case-insensitively) are set back to `expected = FALSE`. This is the
+    "confirm who's sitting the exam" action — excluded students drop out of
+    the missing / not-yet-scanned queue.
+
+    Returns {"expected": int, "excluded": int} — counts after the update.
+    """
+    excluded_keys = sorted({u.strip().upper() for u in excluded_usernames if u.strip()})
+    with _engine.begin() as conn:
+        total = conn.execute(
+            text("SELECT COUNT(*) FROM session_students WHERE session_id = :sid"),
+            {"sid": session_id},
+        ).scalar() or 0
+        conn.execute(
+            text("UPDATE session_students SET expected = TRUE WHERE session_id = :sid"),
+            {"sid": session_id},
+        )
+        excluded = 0
+        if excluded_keys:
+            result = conn.execute(
+                text("""
+                    UPDATE session_students SET expected = FALSE
+                    WHERE session_id = :sid AND UPPER(username) IN :keys
+                """).bindparams(bindparam("keys", expanding=True)),
+                {"sid": session_id, "keys": excluded_keys},
+            )
+            excluded = result.rowcount
+    return {"expected": total - excluded, "excluded": excluded}

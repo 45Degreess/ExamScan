@@ -256,12 +256,15 @@ def _parse_class_list(raw: bytes) -> list[dict]:
 
 
 def _student_status(row: dict) -> str:
-    """Derived roster status: 'scanned' (expected + a booklet matched),
-    'missing' (expected, no booklet yet), or 'unexpected' (a booklet matched
-    someone not on the class list)."""
+    """Derived roster status:
+    - 'scanned'    — a booklet matched this student
+    - 'unexpected' — a booklet matched, but the student was deselected/not on the list
+    - 'missing'    — expected to sit the exam, no booklet yet
+    - 'excluded'   — deselected (expected = 0), not being chased for a scan
+    """
     if row["scanned"]:
         return "scanned" if row["expected"] else "unexpected"
-    return "missing"
+    return "missing" if row["expected"] else "excluded"
 
 
 @router.get("/health")
@@ -696,7 +699,7 @@ async def import_class_list(session_code: str, class_list: UploadFile = File(...
 async def list_session_students(session_code: str):
     """
     The expected-student roster for a session, each row tagged with a derived
-    `status`: 'missing', 'scanned', or 'unexpected'.
+    `status`: 'missing', 'scanned', 'unexpected', or 'excluded'.
     """
     session = await run_in_threadpool(db.get_session, session_code)
     if session is None:
@@ -705,6 +708,25 @@ async def list_session_students(session_code: str):
     rows = await run_in_threadpool(db.get_session_students, session["id"])
     students = [{**r, "status": _student_status(r)} for r in rows]
     return JSONResponse({"session_code": session_code, "students": students})
+
+
+@router.put("/sessions/{session_code}/students/expected")
+async def set_expected_students(
+    session_code: str,
+    excluded: list[str] = Form(default=[]),
+):
+    """
+    Confirm which class-list students are expected to sit the exam. Every
+    roster row is marked expected; the usernames in `excluded` (repeatable
+    form field) are then set to not-expected, dropping them from the missing
+    queue. Idempotent — safe to call again with a different `excluded` set.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    counts = await run_in_threadpool(db.set_students_expected, session["id"], excluded)
+    return JSONResponse({"session_code": session_code, **counts})
 
 
 @router.get("/sessions/{session_code}/reconciliation")

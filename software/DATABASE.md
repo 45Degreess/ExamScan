@@ -29,6 +29,46 @@ set to `0` so it can be pulled up for manual review later. The only thing
 that *is* rejected is a duplicate Emplid within the same session (HTTP 409)
 — it's assumed to be a re-submission, not a legitimate second booklet.
 
+### Expected-student roster (class list)
+
+A session can carry a **class list**: the students expected to sit the exam.
+It's imported from a CSV (`Name, Pronouns, UserName, Email, Role,
+LastAccessed`) — either at session creation (`class_list` file field on
+`POST /sessions`) or later via `POST /sessions/{session_code}/class-list`.
+Only `Role == Student` rows are kept, and only **Name**, **UserName** and
+**Role** are stored, one row per student in `session_students` with
+`expected = 1`.
+
+`UserName` is the student/Emplid number. When a booklet is scanned, its
+OCR'd `Emplid` is matched (case-insensitive) against `session_students.username`
+for that session:
+
+- **Match** → `booklets.student_id` is set and the roster row is marked
+  `scanned = 1` (with `booklet_id` and `scanned_at`).
+- **No match** → the booklet is still stored, `student_id` stays `NULL`, and
+  it shows up in the review queue (`unmatched_booklets`). No roster row is
+  auto-created.
+
+Re-importing the CSV is safe: rows are upserted by `(session_id, username)`,
+names/roles are refreshed and `expected` re-set to `1`, but `scanned` state
+is untouched. Any already-scanned booklets that weren't matched before are
+re-checked against the new roster.
+
+Before scanning starts, the operator confirms who's actually sitting the exam
+via `PUT /sessions/{session_code}/students/expected` (repeatable `excluded`
+form field of usernames). It marks every roster row `expected = 1`, then the
+excluded ones `expected = 0` — a deselected student is no longer chased as
+`missing`.
+
+Status per roster row is *derived*, never stored:
+
+| `expected` | `scanned` | meaning                                          |
+|-----------:|----------:|-------------------------------------------------|
+| 1          | 0         | `missing` — expected to sit, not yet scanned    |
+| 1          | 1         | `scanned` — accounted for                       |
+| 0          | 1         | `unexpected` — scanned, not expected            |
+| 0          | 0         | `excluded` — deselected, not being chased       |
+
 ## Schema
 
 ```sql
@@ -41,19 +81,42 @@ CREATE TABLE scan_sessions (
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE session_students (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    session_id  INT NOT NULL,
+    name        VARCHAR(255) NOT NULL,
+    username    VARCHAR(128) NOT NULL,   -- student/Emplid number; match key
+    role        VARCHAR(64)  NOT NULL DEFAULT 'Student',
+    expected    BOOLEAN      NOT NULL DEFAULT TRUE,   -- came from the class list
+    scanned     BOOLEAN      NOT NULL DEFAULT FALSE,  -- a booklet matched
+    booklet_id  INT          NULL,                    -- the matched booklet
+    scanned_at  DATETIME     NULL,
+    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES scan_sessions(id),
+    UNIQUE KEY uq_session_student (session_id, username)
+);
+
 CREATE TABLE booklets (
     id                    INT AUTO_INCREMENT PRIMARY KEY,
     session_id            INT NOT NULL,
     emplid                VARCHAR(64)  NOT NULL,
+    student_id            INT          NULL,   -- session_students.id, once matched
     course_code_scanned   VARCHAR(64)  NULL,
     course_code_verified  BOOLEAN      NOT NULL DEFAULT FALSE,
     num_pages             INT          NULL,
     pdf_path              VARCHAR(512) NOT NULL,
     created_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES scan_sessions(id),
-    UNIQUE KEY uq_session_emplid (session_id, emplid)
+    UNIQUE KEY uq_session_emplid (session_id, emplid),
+    KEY idx_booklets_student (student_id)
 );
 ```
+
+`session_students.booklet_id` and `booklets.student_id` point at each other
+but are kept as plain nullable `INT`s (no cross `FOREIGN KEY`) to avoid a
+circular table-creation dependency. `init_db()` also runs a one-off
+`ALTER TABLE booklets ADD COLUMN student_id` for databases created before
+this column existed.
 
 Why `VARCHAR` and not fixed-width `CHAR`: OCR output isn't guaranteed to
 match a fixed length or format — a misread can produce a `"?"` in place of
@@ -100,14 +163,35 @@ docker compose down -v     # stops the container AND wipes the data volume
 
 ## Using the endpoints
 
-Start a session:
+Start a session (optionally seeding the expected-student roster):
 
 ```bash
 curl -X POST localhost:8000/sessions \
   -F session_code=S1 \
   -F operator_name=Devak \
   -F test_date=2026-08-18 \
-  -F course_code=CS101
+  -F course_code=CS101 \
+  -F class_list=@class_list.csv          # optional
+```
+
+Import / re-import the class list later:
+
+```bash
+curl -X POST localhost:8000/sessions/S1/class-list -F class_list=@class_list.csv
+```
+
+Confirm who's sitting the exam (deselect two students):
+
+```bash
+curl -X PUT localhost:8000/sessions/S1/students/expected \
+  -F excluded=MSTDEV001 -F excluded=DOEJAN002
+```
+
+Check who's expected vs. scanned:
+
+```bash
+curl localhost:8000/sessions/S1/students          # full roster + derived status
+curl localhost:8000/sessions/S1/reconciliation    # counts + missing + unmatched
 ```
 
 Submit a booklet (one folder = one student's cover + spread images):
