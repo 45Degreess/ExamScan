@@ -114,8 +114,25 @@ export async function detectPreview(file) {
   return res.blob();
 }
 
-// MOCK: there is no backend endpoint for OCR-only-the-front-cover as a
-// standalone "quick check" call distinct from /extract-cover's full response
-// shape used elsewhere. The Debug page's "Scan Front Cover Only" therefore
-// stays fully mocked for now. See docs/final-ui-api-requirements.md
-// ("Debug page — Scan Front Cover Only").
+// POST /extract-cover — real endpoint (software/routes.py). Scans a cover
+// photo and OCRs the cover-field regions. Returns
+// { fields: {name: string}, crops: {name: base64 PNG, no data-URI prefix},
+//   confidences: {name: 0-1, Emplid_digits: number[]},
+//   scan_dimensions: {width, height}, regions_used: {name: [x,y,w,h]} }.
+// Used by the Debug page's "Scan Front Cover Only" button.
+export async function extractCover(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch("/extract-cover", { method: "POST", body: fd });
+  return res.json();
+}
+
+// POST /pi/debug-run — real endpoint (software/routes.py). Server-side proxy
+// that creates one run on the Pi hardware server, captures a single page, and
+// completes it. Returns { run_id, status, page_count, errors }. Throws with a
+// readable message on 502 (Pi unreachable) or 409 (hardware busy). Used by the
+// Debug page's "Create 1 Run" button. No database involvement.
+export async function createDebugRun() {
+  const res = await apiFetch("/pi/debug-run", { method: "POST" });
+  return res.json();
+}

@@ -92,10 +92,14 @@ def init_db() -> None:
                 num_pages INT NULL,
                 confidence FLOAT NULL,
                 pdf_path VARCHAR(512) NOT NULL,
+                run_id VARCHAR(64) NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'complete',
+                error_message VARCHAR(512) NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES scan_sessions(id),
                 UNIQUE KEY uq_session_emplid (session_id, emplid),
-                KEY idx_booklets_student (student_id)
+                KEY idx_booklets_student (student_id),
+                KEY idx_booklets_run (session_id, run_id)
             )
         """))
         # Columns added after the tables' first release; back-fill in place
@@ -109,6 +113,18 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE booklets ADD KEY idx_booklets_student (student_id)"))
         _add_col_if_missing(conn, "booklets", "confidence",
                             "ALTER TABLE booklets ADD COLUMN confidence FLOAT NULL")
+        _add_col_if_missing(conn, "booklets", "run_id",
+                            "ALTER TABLE booklets ADD COLUMN run_id VARCHAR(64) NULL")
+        _add_col_if_missing(conn, "booklets", "status",
+                            "ALTER TABLE booklets ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'complete'")
+        _add_col_if_missing(conn, "booklets", "error_message",
+                            "ALTER TABLE booklets ADD COLUMN error_message VARCHAR(512) NULL")
+        if not conn.execute(text("""
+            SELECT COUNT(*) FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = 'booklets' AND index_name = 'idx_booklets_run'
+        """)).scalar():
+            conn.execute(text("ALTER TABLE booklets ADD KEY idx_booklets_run (session_id, run_id)"))
         _add_col_if_missing(conn, "scan_sessions", "status",
                             "ALTER TABLE scan_sessions ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'open'")
         _add_col_if_missing(conn, "scan_sessions", "finalized_at",
@@ -223,6 +239,173 @@ def _link_booklet_to_student(conn, session_id: int, booklet_id: int, emplid: str
         {"bid": booklet_id, "stid": student["id"]},
     )
     return student["id"]
+
+
+# ── Pi-run collection: placeholder rows processed by a background task ────────
+
+# A booklet stuck in 'processing' for longer than this is treated as abandoned
+# (e.g. the API restarted mid-task) and its run may be collected again.
+STALE_PROCESSING_SECONDS = 600
+
+
+def create_pending_booklet(session_id: int, run_id: str) -> int:
+    """
+    Insert a placeholder booklet for a Pi run that is about to be processed by
+    a background task. `emplid` is a per-run sentinel ("__run_<run_id>") so the
+    row can exist before OCR without colliding on uq_session_emplid; `pdf_path`
+    is blank until processing finishes. Returns the new booklet id.
+    """
+    with _engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                INSERT INTO booklets
+                    (session_id, emplid, course_code_scanned, course_code_verified,
+                     num_pages, confidence, pdf_path, run_id, status)
+                VALUES
+                    (:session_id, :emplid, NULL, FALSE,
+                     NULL, NULL, '', :run_id, 'processing')
+            """),
+            {
+                "session_id": session_id,
+                "emplid": f"__run_{run_id}",
+                "run_id": run_id,
+            },
+        )
+        return result.lastrowid
+
+
+def update_booklet_result(
+    booklet_id: int,
+    emplid: str,
+    course_code_scanned: str,
+    verified: bool,
+    num_pages: int | None,
+    pdf_path: str,
+    confidence: float | None = None,
+) -> dict:
+    """
+    Fill in a placeholder booklet (see create_pending_booklet) with real OCR
+    results, mark it 'complete', and link it to a class-list student the same
+    way insert_booklet does. Raises DuplicateEmplidError if `emplid` now
+    collides with another booklet in the same session (the caller marks the
+    row errored and leaves the sentinel emplid in place).
+
+    Returns {"booklet_id": int, "student_id": int | None}.
+    """
+    try:
+        with _engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT session_id FROM booklets WHERE id = :bid"),
+                {"bid": booklet_id},
+            ).mappings().first()
+            if row is None:
+                raise ValueError(f"No booklet with id {booklet_id}")
+            session_id = row["session_id"]
+            conn.execute(
+                text("""
+                    UPDATE booklets
+                    SET emplid = :emplid,
+                        course_code_scanned = :course_code_scanned,
+                        course_code_verified = :verified,
+                        num_pages = :num_pages,
+                        confidence = :confidence,
+                        pdf_path = :pdf_path,
+                        status = 'complete',
+                        error_message = NULL
+                    WHERE id = :bid
+                """),
+                {
+                    "emplid": emplid,
+                    "course_code_scanned": course_code_scanned,
+                    "verified": verified,
+                    "num_pages": num_pages,
+                    "confidence": confidence,
+                    "pdf_path": pdf_path,
+                    "bid": booklet_id,
+                },
+            )
+            student_id = _link_booklet_to_student(conn, session_id, booklet_id, emplid)
+            return {"booklet_id": booklet_id, "student_id": student_id}
+    except IntegrityError as exc:
+        raise DuplicateEmplidError(emplid) from exc
+
+
+def mark_booklet_error(booklet_id: int, message: str) -> None:
+    """Flag a placeholder booklet as failed, keeping it in the list so the
+    operator sees what went wrong."""
+    with _engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE booklets
+                SET status = 'error', error_message = :msg
+                WHERE id = :bid
+            """),
+            {"msg": (message or "")[:512], "bid": booklet_id},
+        )
+
+
+def get_imported_run_ids(session_id: int) -> set[str]:
+    """run_ids already collected for this session that should NOT be collected
+    again — every 'complete' one, plus 'processing' ones still within the
+    stale window. Errored and abandoned runs are omitted so they can retry."""
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT run_id FROM booklets
+                WHERE session_id = :sid
+                  AND run_id IS NOT NULL
+                  AND (
+                      status = 'complete'
+                      OR (status = 'processing'
+                          AND created_at > (NOW() - INTERVAL :secs SECOND))
+                  )
+            """),
+            {"sid": session_id, "secs": STALE_PROCESSING_SECONDS},
+        ).scalars().all()
+    return {r for r in rows if r}
+
+
+def list_booklets_for_session(session_id: int) -> list[dict]:
+    """Every booklet for a session (any status), oldest first, with the linked
+    class-list student's name when there is one. Feeds the View Session table."""
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT b.id, b.run_id, b.emplid, b.student_id,
+                       b.course_code_scanned, b.course_code_verified,
+                       b.num_pages, b.confidence, b.status, b.error_message,
+                       b.created_at, ss.name AS student_name
+                FROM booklets b
+                LEFT JOIN session_students ss ON ss.id = b.student_id
+                WHERE b.session_id = :sid
+                ORDER BY b.created_at, b.id
+            """),
+            {"sid": session_id},
+        ).mappings().all()
+    out = []
+    for r in rows:
+        emplid = r["emplid"] or ""
+        if emplid.startswith("__run_"):
+            emplid = ""
+        out.append({
+            "id": r["id"],
+            "run_id": r["run_id"],
+            "emplid": emplid,
+            "student_id": r["student_id"],
+            "on_class_list": r["student_id"] is not None,
+            "name": r["student_name"] or emplid or None,
+            "course_code_scanned": r["course_code_scanned"],
+            "course_code_verified": (
+                bool(r["course_code_verified"])
+                if r["course_code_verified"] is not None else None
+            ),
+            "num_pages": r["num_pages"],
+            "confidence": float(r["confidence"]) if r["confidence"] is not None else None,
+            "status": r["status"],
+            "error_message": r["error_message"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        })
+    return out
 
 
 def import_session_students(session_id: int, students: list[dict]) -> dict:

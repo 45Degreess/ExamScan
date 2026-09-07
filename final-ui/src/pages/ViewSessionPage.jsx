@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { palette, space, font, radius } from "../theme.js";
 import Card from "../components/Card.jsx";
@@ -8,10 +8,30 @@ import DataTable from "../components/DataTable.jsx";
 import CameraFeed from "../components/CameraFeed.jsx";
 import FormField, { TextInput } from "../components/FormField.jsx";
 import { useSession } from "../context/SessionContext.jsx";
-import { listRuns, addMockRun, updateRun } from "../api/mockRuns.js";
+import { collectRuns, listBooklets } from "../api/runs.js";
+import { bookletPdfUrl } from "../api/sessions.js";
+import { updateRun } from "../api/mockRuns.js";
 
-const STATUS_DOT = { complete: "green", processing: "yellow", not_started: "red" };
-const STATUS_LABEL = { complete: "Complete", processing: "Processing", not_started: "Not started" };
+const POLL_MS = 4000;
+
+const STATUS_DOT = { complete: "green", processing: "yellow", error: "red" };
+const STATUS_LABEL = { complete: "Complete", processing: "Processing", error: "Error" };
+
+// Backend booklet (software/routes.py GET /sessions/{code}/booklets) -> table row.
+function toRow(b) {
+  const lowConfidence =
+    b.confidence == null || b.confidence < 0.5 || b.course_code_verified === false;
+  return {
+    id: b.run_id || `#${b.id}`,
+    bookletId: b.id,
+    status: b.status,
+    errorMessage: b.error_message,
+    confidence: lowConfidence ? "red" : "green",
+    emplid: b.emplid || "",
+    courseCode: b.course_code_scanned || "",
+    pageCount: b.num_pages ?? "",
+  };
+}
 
 export default function ViewSessionPage() {
   const { sessionId } = useParams();
@@ -20,39 +40,85 @@ export default function ViewSessionPage() {
   const [runs, setRuns] = useState([]);
   const [editingRunId, setEditingRunId] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  const [collecting, setCollecting] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const sessionCodeRef = useRef(null);
 
   useEffect(() => {
-    if (!currentSession || String(currentSession.id) !== String(sessionId)) {
-      const loaded = loadSession(sessionId);
-      if (!loaded) {
+    let session = currentSession;
+    if (!session || String(session.id) !== String(sessionId)) {
+      session = loadSession(sessionId);
+      if (!session) {
         navigate("/");
         return;
       }
     }
-    setRuns(listRuns(sessionId));
+    const sessionCode = session.sessionCode;
+    sessionCodeRef.current = sessionCode;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const data = await listBooklets(sessionCode);
+        if (cancelled) return;
+        setRuns((data.booklets || []).map(toRow));
+        setLoadError(null);
+      } catch (e) {
+        if (!cancelled) setLoadError(e.message); // keep the last good rows
+      }
+    };
+    poll();
+    const id = setInterval(poll, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const refreshRuns = () => setRuns(listRuns(sessionId));
+  const refreshRuns = async () => {
+    const sessionCode = sessionCodeRef.current;
+    if (!sessionCode) return;
+    try {
+      const data = await listBooklets(sessionCode);
+      setRuns((data.booklets || []).map(toRow));
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e.message);
+    }
+  };
 
-  // MOCK: "Collect New Runs" should pull run archives from the Pi via the
-  // existing GET/POST /runs proxy (software/routes.py:504-556) and turn each
-  // into a session-scoped run row. No such linkage exists yet — see
-  // docs/final-ui-api-requirements.md ("View Session page — Collect New Runs").
-  const handleCollectRuns = () => {
-    addMockRun(sessionId);
-    refreshRuns();
+  // Pull every completed Pi run not yet collected for this session; the poll
+  // above then surfaces the new rows as they move processing -> complete.
+  const handleCollectRuns = async () => {
+    const sessionCode = sessionCodeRef.current;
+    if (!sessionCode || collecting) return;
+    setCollecting(true);
+    setNotice(null);
+    try {
+      const res = await collectRuns(sessionCode);
+      const n = res.queued?.length ?? 0;
+      setNotice(
+        n > 0
+          ? `Queued ${n} run${n === 1 ? "" : "s"} for processing…`
+          : "No new completed runs on the Pi.",
+      );
+      refreshRuns();
+    } catch (e) {
+      setNotice(e.message);
+    } finally {
+      setCollecting(false);
+    }
   };
 
   // MOCK: "New Single Run" should trigger the Pi's real capture workflow
-  // (server.py POST /api/runs + /capture + /complete) for one run. See docs
-  // ("View Session page — New Single Run").
+  // (server.py POST /api/runs + /capture + /complete) for one run. See
+  // docs/final-ui-api-requirements.md ("View Session page — New Single Run").
   const handleNewRun = () => {
-    addMockRun(sessionId);
-    refreshRuns();
+    setNotice("New Single Run isn't wired to the Pi yet — see docs/final-ui-api-requirements.md.");
   };
 
-  // MOCK: no bulk-download endpoint exists (booklets.pdf_path is never
-  // served over HTTP, singly or in bulk). See docs
+  // MOCK: no bulk-download endpoint exists yet. See docs
   // ("View Session page — Download All PDFs").
   const handleDownloadAll = () => {
     alert("Not yet implemented — the backend has no endpoint to download completed PDFs. See docs/final-ui-api-requirements.md.");
@@ -68,12 +134,12 @@ export default function ViewSessionPage() {
     setEditForm(null);
   };
 
-  // MOCK: persists to localStorage only. Real version needs an UPDATE path
-  // on the backend (db.py has no update_booklet()) — see docs
-  // ("View Session page — Edit Run").
+  // MOCK: writes to localStorage only and will be overwritten by the next poll.
+  // Real version needs PATCH /sessions/{code}/booklets/{id} (db.py has no
+  // update path for operator edits) — see docs ("View Session page — Edit Run").
   const saveEdit = () => {
     updateRun(sessionId, editingRunId, editForm);
-    refreshRuns();
+    setNotice("Edit saved locally only — booklet metadata editing isn't wired to the backend yet.");
     cancelEdit();
   };
 
@@ -84,16 +150,21 @@ export default function ViewSessionPage() {
     {
       key: "status",
       header: "Completion Status",
-      render: (row) => <StatusDot status={STATUS_DOT[row.status]} label={STATUS_LABEL[row.status]} />,
+      render: (row) => (
+        <span title={row.status === "error" ? row.errorMessage || "" : undefined}>
+          <StatusDot status={STATUS_DOT[row.status] || "red"} label={STATUS_LABEL[row.status] || row.status} />
+        </span>
+      ),
     },
     {
       key: "view",
       header: "View",
       render: (row) => {
-        const canView = row.status === "complete" || row.confidence === "red";
+        const canView = row.status === "complete";
+        const href = canView ? bookletPdfUrl(sessionCodeRef.current, row.bookletId) : "#";
         return (
           <a
-            href={row.pdfUrl || "#"}
+            href={href}
             target="_blank"
             rel="noreferrer"
             onClick={(e) => !canView && e.preventDefault()}
@@ -173,9 +244,14 @@ export default function ViewSessionPage() {
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
-                <Button onClick={handleCollectRuns}>Collect New Runs</Button>
+                <Button onClick={handleCollectRuns} disabled={collecting}>
+                  {collecting ? "Collecting…" : "Collect New Runs"}
+                </Button>
                 <Button onClick={handleNewRun}>New Single Run</Button>
                 <Button onClick={handleDownloadAll}>Download All PDFs</Button>
+                {notice && (
+                  <div style={{ fontSize: 12, color: palette.textMuted, marginTop: space.xs }}>{notice}</div>
+                )}
               </div>
             )}
           </Card>
@@ -183,6 +259,21 @@ export default function ViewSessionPage() {
 
         {/* Right column: runs table, ~half the page */}
         <Card style={{ flex: 1.4, minWidth: 380 }} title="Runs">
+          {loadError && (
+            <div
+              style={{
+                marginBottom: space.sm,
+                padding: "8px 12px",
+                background: palette.dangerBg,
+                border: `1px solid ${palette.danger}`,
+                borderRadius: 8,
+                fontSize: 12,
+                color: palette.danger,
+              }}
+            >
+              Couldn’t refresh runs: {loadError}
+            </div>
+          )}
           <DataTable columns={columns} rows={runs} emptyText="No runs collected yet." />
         </Card>
       </div>

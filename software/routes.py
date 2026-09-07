@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -15,7 +16,7 @@ import httpx
 import numpy as np
 from imutils.perspective import four_point_transform
 from PIL import Image as PILImage
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi import Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -25,6 +26,8 @@ import db
 SAMPLE_DIR = Path(__file__).parent / "sample_images"
 STORAGE_ROOT = Path(__file__).parent / "storage"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+logger = logging.getLogger(__name__)
 
 from constants import (
     A4_WIDTH,
@@ -688,6 +691,61 @@ async def pi_stream():
     )
 
 
+def _expect_pi_ok(resp: httpx.Response, what: str) -> None:
+    """Turn a non-2xx response from the Pi hardware server into an HTTPException.
+    A 409 (hardware busy) is surfaced as-is; anything else is a 502."""
+    if resp.is_success:
+        return
+    try:
+        detail = resp.json().get("error") or resp.text
+    except Exception:  # noqa: BLE001
+        detail = resp.text
+    if resp.status_code == 409:
+        raise HTTPException(status_code=409, detail=f"Pi hardware is busy: {detail}")
+    raise HTTPException(
+        status_code=502,
+        detail=f"Pi {what} failed (status {resp.status_code}): {detail}",
+    )
+
+
+@router.post("/pi/debug-run")
+async def pi_debug_run():
+    """
+    Smoke-test the Pi capture pipeline end to end: create a run, capture one
+    page, and complete it — three calls to the Pi hardware server
+    ({RUNS_API_BASE_URL}/api/runs[...]), orchestrated server-side so the Debug
+    page makes a single request. No database writes.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            created = await client.post(f"{RUNS_API_BASE_URL}/api/runs")
+            _expect_pi_ok(created, "create run")
+            run_id = created.json()["run_id"]
+
+            captured = await client.post(
+                f"{RUNS_API_BASE_URL}/api/runs/{run_id}/capture"
+            )
+            _expect_pi_ok(captured, "capture page")
+
+            completed = await client.post(
+                f"{RUNS_API_BASE_URL}/api/runs/{run_id}/complete"
+            )
+            _expect_pi_ok(completed, "complete run")
+            manifest = completed.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach Pi hardware server: {e or type(e).__name__}",
+        )
+
+    return JSONResponse({
+        "run_id": manifest.get("run_id", run_id),
+        "status": manifest.get("status"),
+        "page_count": manifest.get("page_count"),
+        "errors": manifest.get("errors", []),
+    })
+
+
 @router.get("/samples")
 async def list_samples():
     """Return sorted list of sample image filenames."""
@@ -958,3 +1016,155 @@ async def add_booklet(
         "on_class_list": booklet["student_id"] is not None,
         "student_info": student_info,
     })
+
+
+# ── Automatic run collection from the Pi ─────────────────────────────────────
+
+
+async def _process_collected_run(session: dict, booklet_id: int, run_id: str) -> None:
+    """
+    Background worker for one Pi run: download its archive, run the same
+    OCR/scan pipeline as /sessions/{code}/booklets, and fill in the
+    placeholder booklet row. Every failure path flips the row to 'error'
+    rather than raising, so one bad run can't take down the collect request
+    or the server.
+    """
+    session_code = session["session_code"]
+    try:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(f"{RUNS_API_BASE_URL}/api/runs/{run_id}/archive")
+        except httpx.HTTPError as e:
+            await run_in_threadpool(
+                db.mark_booklet_error, booklet_id, f"Could not reach runs API: {e}"
+            )
+            return
+        if resp.status_code != 200:
+            await run_in_threadpool(
+                db.mark_booklet_error,
+                booklet_id,
+                f"Archive download failed for run {run_id} (status {resp.status_code}).",
+            )
+            return
+
+        staging = Path(tempfile.mkdtemp(prefix="examscan_collect_"))
+        try:
+            input_dir = staging / "input"
+            input_dir.mkdir()
+            staging_output = staging / "output"
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                zf.extractall(input_dir)
+
+            # build_archive namespaces every page under a "{run_id}/" folder,
+            # but _process_exam_folder only scans one level deep — descend into
+            # the single nested dir when that's the shape.
+            children = list(input_dir.iterdir())
+            subdirs = [p for p in children if p.is_dir()]
+            has_top_level_images = any(
+                p.is_file() and p.suffix.lower() in _IMAGE_EXTS for p in children
+            )
+            scan_dir = subdirs[0] if len(subdirs) == 1 and not has_top_level_images else input_dir
+
+            result = await run_in_threadpool(
+                _process_exam_folder, scan_dir, staging_output, "colour", True
+            )
+
+            student_info = result["student_info"]
+            emplid = student_info.get("Emplid", "")
+            scanned_course = student_info.get("Course Code", "")
+            verified = (
+                scanned_course.strip().upper() == session["course_code"].strip().upper()
+            )
+            final_dir = STORAGE_ROOT / session_code / (emplid or f"run_{run_id}")
+
+            try:
+                await run_in_threadpool(
+                    db.update_booklet_result,
+                    booklet_id,
+                    emplid,
+                    scanned_course,
+                    verified,
+                    result["num_pages"],
+                    str(final_dir / "combined.pdf"),
+                    result.get("confidence"),
+                )
+            except db.DuplicateEmplidError:
+                await run_in_threadpool(
+                    db.mark_booklet_error,
+                    booklet_id,
+                    f"Emplid '{emplid}' already recorded for session '{session_code}'.",
+                )
+                return
+
+            if final_dir.exists():
+                shutil.rmtree(final_dir)
+            final_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staging_output), str(final_dir))
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    except Exception as e:  # noqa: BLE001 — background task, nothing above to catch it
+        logger.exception("Failed to process collected run %s", run_id)
+        try:
+            await run_in_threadpool(db.mark_booklet_error, booklet_id, str(e))
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not even mark run %s errored", run_id)
+
+
+@router.post("/sessions/{session_code}/collect-runs")
+async def collect_runs(session_code: str, background_tasks: BackgroundTasks):
+    """
+    Pull every completed run off the Pi that hasn't been collected for this
+    session yet, create a placeholder booklet per run, and process each in the
+    background. Returns immediately with the list of queued run ids; the
+    frontend polls GET /sessions/{code}/booklets to watch them finish.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{RUNS_API_BASE_URL}/api/runs")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach runs API: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502, detail=f"Failed to fetch runs (status {resp.status_code})."
+        )
+
+    payload = resp.json()
+    runs = payload.get("runs", payload) if isinstance(payload, dict) else payload
+    already = await run_in_threadpool(db.get_imported_run_ids, session["id"])
+
+    completed = [
+        r for r in runs
+        if isinstance(r, dict) and r.get("status") == "complete" and r.get("run_id")
+    ]
+    new_runs = [r for r in completed if r["run_id"] not in already]
+
+    queued = []
+    for r in new_runs:
+        run_id = r["run_id"]
+        booklet_id = await run_in_threadpool(
+            db.create_pending_booklet, session["id"], run_id
+        )
+        background_tasks.add_task(_process_collected_run, session, booklet_id, run_id)
+        queued.append(run_id)
+
+    return JSONResponse({
+        "session_code": session_code,
+        "queued": queued,
+        "skipped_existing": len(completed) - len(new_runs),
+        "pi_runs_seen": len(runs),
+    })
+
+
+@router.get("/sessions/{session_code}/booklets")
+async def list_session_booklets(session_code: str):
+    """Every booklet for a session (any status), for the View Session table."""
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    booklets = await run_in_threadpool(db.list_booklets_for_session, session["id"])
+    return JSONResponse({"session_code": session_code, "booklets": booklets})
