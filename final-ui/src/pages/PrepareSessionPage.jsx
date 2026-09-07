@@ -29,32 +29,37 @@ export default function PrepareSessionPage() {
   useEffect(() => {
     let cancelled = false;
 
-    let s = currentSession;
-    if (!s || String(s.id) !== String(sessionId)) {
-      s = loadSession(sessionId);
-    }
-    if (!s) {
-      navigate("/");
-      return;
-    }
-    setSession(s);
+    (async () => {
+      let s = currentSession;
+      if (!s || String(s.id) !== String(sessionId)) {
+        s = await loadSession(sessionId);
+      }
+      if (cancelled) return;
+      if (!s) {
+        navigate("/");
+        return;
+      }
+      setSession(s);
 
-    if (!s.sessionCode) {
-      setError("This session has no code on record — recreate it.");
-      setLoading(false);
-      return;
-    }
+      if (!s.sessionCode) {
+        setError("This session has no code on record — recreate it.");
+        setLoading(false);
+        return;
+      }
 
-    setLoading(true);
-    getSessionStudents(s.sessionCode)
-      .then((data) => {
+      setLoading(true);
+      try {
+        const data = await getSessionStudents(s.sessionCode);
         if (cancelled) return;
         const rows = data.students || [];
         setStudents(rows);
         setSelected(new Set(rows.filter((r) => r.expected).map((r) => r.username)));
-      })
-      .catch((e) => !cancelled && setError(e.message))
-      .finally(() => !cancelled && setLoading(false));
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
 
     return () => {
       cancelled = true;

@@ -15,7 +15,7 @@ export default function CreateSessionPage() {
   const [operatorName, setOperatorName] = useState("");
   const [courseCode, setCourseCode] = useState("");
   const [date, setDate] = useState("");
-  const [studentListFile, setStudentListFile] = useState(null); // MOCK: see below
+  const [studentListFile, setStudentListFile] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -43,7 +43,7 @@ export default function CreateSessionPage() {
         operatorName: operatorName.trim(),
         courseCode: courseCode.trim(),
         date,
-        studentListName: studentListFile ? studentListFile.name : null,
+        hasRoster: !!studentListFile,
       });
 
       // With a class list, step through the Prepare page (review/deselect

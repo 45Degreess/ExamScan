@@ -44,6 +44,38 @@ export async function createSession({ sessionCode, operatorName, testDate, cours
   return res.json();
 }
 
+// Backend scan_sessions row (snake_case) -> the camelCase shape the app's
+// `currentSession` uses. `student_count` becomes the `hasRoster` gate for the
+// "Edit class list" button (the uploaded filename it replaced was UI-only).
+function toSession(row) {
+  return {
+    id: row.id,
+    sessionCode: row.session_code,
+    operatorName: row.operator_name,
+    courseCode: row.course_code,
+    date: row.test_date,
+    status: row.status,
+    createdAt: row.created_at,
+    hasRoster: (row.student_count ?? 0) > 0,
+  };
+}
+
+// GET /sessions — real endpoint (software/routes.py). Every session, newest
+// first, for the Login page's "View Previous Session" picker.
+export async function listSessions() {
+  const res = await apiFetch("/sessions");
+  const { sessions } = await res.json();
+  return sessions.map(toSession);
+}
+
+// GET /sessions/{id} — real endpoint (software/routes.py). Fetch one session
+// by numeric id; used by SessionContext.loadSession to rehydrate on a hard
+// refresh of /sessions/:id. Throws on 404.
+export async function getSession(sessionId) {
+  const res = await apiFetch(`/sessions/${encodeURIComponent(sessionId)}`);
+  return toSession(await res.json());
+}
+
 // GET /sessions/{code}/students — real endpoint (software/routes.py).
 // Returns { session_code, students: [{ id, name, username, role, expected,
 // scanned, booklet_id, scanned_at, status }] }.

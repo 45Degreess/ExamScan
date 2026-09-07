@@ -1,22 +1,32 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { palette, space, font } from "../theme.js";
 import Card from "../components/Card.jsx";
 import Button from "../components/Button.jsx";
 import StatusDot from "../components/StatusDot.jsx";
 import { useSession } from "../context/SessionContext.jsx";
-import { listSessions } from "../api/mockRuns.js";
+import { listSessions } from "../api/sessions.js";
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { backendOnline, piOnline, loadSession } = useSession();
+  const { backendOnline, piOnline } = useSession();
   const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [sessions, setSessions] = useState([]);
 
-  const sessions = listSessions(); // MOCK: see api/mockRuns.js — real version needs GET /sessions
+  // GET /sessions — load once the backend health check passes.
+  useEffect(() => {
+    if (!backendOnline) return;
+    let cancelled = false;
+    listSessions()
+      .then((s) => !cancelled && setSessions(s))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [backendOnline]);
 
   const handleViewSession = () => {
     if (!selectedSessionId) return;
-    loadSession(selectedSessionId);
     navigate(`/sessions/${selectedSessionId}`);
   };
 
@@ -53,7 +63,7 @@ export default function LoginPage() {
             <StatusDot
               status={piOnline ? "green" : "red"}
               label="Raspberry Pi"
-              title="MOCK: Pi connectivity check is not implemented yet — see docs/final-ui-api-requirements.md"
+              title="Live check via GET /pi/health (proxied to the Pi hardware server)"
             />
           </div>
         </Card>

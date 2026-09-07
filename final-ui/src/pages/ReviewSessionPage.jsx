@@ -60,25 +60,27 @@ export default function ReviewSessionPage() {
   useEffect(() => {
     let cancelled = false;
 
-    let s = currentSession;
-    if (!s || String(s.id) !== String(sessionId)) {
-      s = loadSession(sessionId);
-    }
-    if (!s) {
-      navigate("/");
-      return;
-    }
-    setSession(s);
+    (async () => {
+      let s = currentSession;
+      if (!s || String(s.id) !== String(sessionId)) {
+        s = await loadSession(sessionId);
+      }
+      if (cancelled) return;
+      if (!s) {
+        navigate("/");
+        return;
+      }
+      setSession(s);
 
-    if (!s.sessionCode) {
-      setError("This session has no code on record — recreate it.");
-      setLoading(false);
-      return;
-    }
+      if (!s.sessionCode) {
+        setError("This session has no code on record — recreate it.");
+        setLoading(false);
+        return;
+      }
 
-    setLoading(true);
-    getSessionReview(s.sessionCode)
-      .then((data) => {
+      setLoading(true);
+      try {
+        const data = await getSessionReview(s.sessionCode);
         if (cancelled) return;
         const rows = (data.items || []).map((it) => ({ ...it, id: it.row_key }));
         setItems(rows);
@@ -90,9 +92,12 @@ export default function ReviewSessionPage() {
               .map((r) => r.id),
           ),
         );
-      })
-      .catch((e) => !cancelled && setError(e.message))
-      .finally(() => !cancelled && setLoading(false));
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
 
     return () => {
       cancelled = true;

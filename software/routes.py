@@ -808,6 +808,40 @@ async def create_session(
     })
 
 
+def _session_out(row: dict) -> dict:
+    """Serialize a scan_sessions row (dates -> ISO strings) for the API."""
+    def _iso(v):
+        return v.isoformat() if v is not None else None
+    return {
+        "id": row["id"],
+        "session_code": row["session_code"],
+        "operator_name": row["operator_name"],
+        "test_date": _iso(row.get("test_date")),
+        "course_code": row["course_code"],
+        "status": row.get("status", "open"),
+        "created_at": _iso(row.get("created_at")),
+        "finalized_at": _iso(row.get("finalized_at")),
+        "student_count": int(row.get("student_count") or 0),
+    }
+
+
+@router.get("/sessions")
+async def list_sessions():
+    """List every scan session, newest first, for the Login-page picker."""
+    rows = await run_in_threadpool(db.list_sessions)
+    return JSONResponse({"sessions": [_session_out(r) for r in rows]})
+
+
+@router.get("/sessions/{session_id:int}")
+async def get_session_by_id(session_id: int):
+    """Fetch one session by its numeric id (used to rehydrate the UI on a
+    hard refresh of /sessions/:id)."""
+    row = await run_in_threadpool(db.get_session_by_id, session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No session with id {session_id}.")
+    return JSONResponse(_session_out(row))
+
+
 @router.post("/sessions/{session_code}/class-list")
 async def import_class_list(session_code: str, class_list: UploadFile = File(...)):
     """

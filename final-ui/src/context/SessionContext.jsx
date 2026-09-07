@@ -1,6 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { checkBackendHealth, checkPiHealth } from "../api/sessions.js";
-import { getSession, saveSession as persistSession } from "../api/mockRuns.js";
+import { checkBackendHealth, checkPiHealth, getSession as fetchSession } from "../api/sessions.js";
 
 const SessionContext = createContext(null);
 
@@ -29,14 +28,22 @@ export function SessionProvider({ children }) {
     };
   }, []);
 
-  const loadSession = useCallback((sessionId) => {
-    const session = getSession(sessionId);
-    setCurrentSession(session);
-    return session;
+  // Rehydrate currentSession from the backend by numeric id (GET /sessions/:id).
+  // Used on a hard refresh of /sessions/:id/*, where currentSession starts null.
+  const loadSession = useCallback(async (sessionId) => {
+    try {
+      const session = await fetchSession(sessionId);
+      setCurrentSession(session);
+      return session;
+    } catch {
+      setCurrentSession(null);
+      return null;
+    }
   }, []);
 
+  // The session is already persisted server-side by POST /sessions; just hold
+  // the freshly-created object in memory for the next screen.
   const startSession = useCallback((session) => {
-    persistSession(session);
     setCurrentSession(session);
   }, []);
 

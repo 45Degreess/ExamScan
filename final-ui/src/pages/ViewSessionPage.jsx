@@ -10,7 +10,6 @@ import FormField, { TextInput } from "../components/FormField.jsx";
 import { useSession } from "../context/SessionContext.jsx";
 import { collectRuns, listBooklets } from "../api/runs.js";
 import { bookletPdfUrl } from "../api/sessions.js";
-import { updateRun } from "../api/mockRuns.js";
 
 const POLL_MS = 4000;
 
@@ -46,33 +45,39 @@ export default function ViewSessionPage() {
   const sessionCodeRef = useRef(null);
 
   useEffect(() => {
-    let session = currentSession;
-    if (!session || String(session.id) !== String(sessionId)) {
-      session = loadSession(sessionId);
+    let cancelled = false;
+    let timer = null;
+
+    (async () => {
+      let session = currentSession;
+      if (!session || String(session.id) !== String(sessionId)) {
+        session = await loadSession(sessionId);
+      }
+      if (cancelled) return;
       if (!session) {
         navigate("/");
         return;
       }
-    }
-    const sessionCode = session.sessionCode;
-    sessionCodeRef.current = sessionCode;
+      const sessionCode = session.sessionCode;
+      sessionCodeRef.current = sessionCode;
 
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const data = await listBooklets(sessionCode);
-        if (cancelled) return;
-        setRuns((data.booklets || []).map(toRow));
-        setLoadError(null);
-      } catch (e) {
-        if (!cancelled) setLoadError(e.message); // keep the last good rows
-      }
-    };
-    poll();
-    const id = setInterval(poll, POLL_MS);
+      const poll = async () => {
+        try {
+          const data = await listBooklets(sessionCode);
+          if (cancelled) return;
+          setRuns((data.booklets || []).map(toRow));
+          setLoadError(null);
+        } catch (e) {
+          if (!cancelled) setLoadError(e.message); // keep the last good rows
+        }
+      };
+      poll();
+      timer = setInterval(poll, POLL_MS);
+    })();
+
     return () => {
       cancelled = true;
-      clearInterval(id);
+      if (timer) clearInterval(timer);
     };
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -134,12 +139,12 @@ export default function ViewSessionPage() {
     setEditForm(null);
   };
 
-  // MOCK: writes to localStorage only and will be overwritten by the next poll.
-  // Real version needs PATCH /sessions/{code}/booklets/{id} (db.py has no
-  // update path for operator edits) — see docs ("View Session page — Edit Run").
+  // MOCK: booklet metadata editing has no backend path yet — needs
+  // PATCH /sessions/{code}/booklets/{id} (db.py has no update for operator
+  // edits). See docs ("View Session page — Edit Run"). For now the form just
+  // closes with a notice; nothing is persisted.
   const saveEdit = () => {
-    updateRun(sessionId, editingRunId, editForm);
-    setNotice("Edit saved locally only — booklet metadata editing isn't wired to the backend yet.");
+    setNotice("Booklet metadata editing isn't wired to the backend yet — nothing was saved.");
     cancelEdit();
   };
 
@@ -205,7 +210,7 @@ export default function ViewSessionPage() {
           <Button variant="primary" onClick={() => navigate(`/sessions/${sessionId}/review`)}>
             Review &amp; finalize
           </Button>
-          {currentSession.studentListName && (
+          {currentSession.hasRoster && (
             <Button variant="subtle" onClick={() => navigate(`/sessions/${sessionId}/prepare`)}>
               Edit class list
             </Button>

@@ -160,6 +160,38 @@ def get_session(session_code: str) -> dict | None:
     return dict(row) if row else None
 
 
+_SESSION_LIST_SQL = """
+    SELECT s.id, s.session_code, s.operator_name, s.test_date, s.course_code,
+           s.status, s.created_at, s.finalized_at,
+           COUNT(ss.id) AS student_count
+    FROM scan_sessions s
+    LEFT JOIN session_students ss ON ss.session_id = s.id
+    {where}
+    GROUP BY s.id, s.session_code, s.operator_name, s.test_date, s.course_code,
+             s.status, s.created_at, s.finalized_at
+    {order}
+"""
+
+
+def list_sessions() -> list[dict]:
+    """Every scan session, newest first, each with its roster size."""
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            text(_SESSION_LIST_SQL.format(where="", order="ORDER BY s.created_at DESC"))
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def get_session_by_id(session_id: int) -> dict | None:
+    """A single session by its numeric id, with roster size, or None."""
+    with _engine.connect() as conn:
+        row = conn.execute(
+            text(_SESSION_LIST_SQL.format(where="WHERE s.id = :id", order="")),
+            {"id": session_id},
+        ).mappings().first()
+    return dict(row) if row else None
+
+
 def insert_booklet(
     session_id: int,
     emplid: str,
