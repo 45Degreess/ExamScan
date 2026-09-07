@@ -5,6 +5,7 @@ import Card from "../components/Card.jsx";
 import Button from "../components/Button.jsx";
 import StatusDot from "../components/StatusDot.jsx";
 import DataTable from "../components/DataTable.jsx";
+import CameraFeed from "../components/CameraFeed.jsx";
 import FormField, { TextInput } from "../components/FormField.jsx";
 import { useSession } from "../context/SessionContext.jsx";
 import { listRuns, addMockRun, updateRun } from "../api/mockRuns.js";
@@ -145,14 +146,10 @@ export default function ViewSessionPage() {
       <div style={{ display: "flex", gap: space.lg, alignItems: "stretch" }}>
         {/* Left column: two stacked boxes, evenly spaced */}
         <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: space.lg }}>
-          {/* Top-left: live feed placeholder — not implemented per spec */}
-          <Card style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 180 }}>
-            {/*
-              Not implemented: would show an MJPEG feed from the Pi's /stream
-              endpoint (server.py) once the Pi and browser can reach each
-              other (network/CORS). See docs/final-ui-api-requirements.md.
-            */}
-            <span style={{ color: palette.textMuted, fontSize: 14 }}>Live Feed of Camera</span>
+          {/* Top-left: live MJPEG feed from the Pi, proxied via /api/pi/stream
+              (software/routes.py). CameraFeed owns its own reconnect loop. */}
+          <Card style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 180, padding: 0, overflow: "hidden" }}>
+            <CameraFeed />
           </Card>
 
           {/* Bottom-left: buttons, toggling to the edit-run form */}

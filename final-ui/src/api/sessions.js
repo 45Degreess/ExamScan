@@ -11,13 +11,19 @@ export async function checkBackendHealth() {
   }
 }
 
-// MOCK: there is no way to check Raspberry Pi connectivity from the browser
-// today. The Pi's hardware server (server.py) exposes GET /api/health on its
-// own host/port (config.toml, default 10.42.0.1:8000) with no CORS headers
-// and no proxy from the FastAPI backend. See docs/final-ui-api-requirements.md
-// ("Login page — Pi connection status") for what's needed to make this real.
+// GET /pi/health — real endpoint (software/routes.py). Server-side proxy to
+// the Pi hardware server's GET /api/health, so the browser gets a same-origin
+// answer. Returns { ok, streaming, ... } when the Pi is up, { ok: false } when
+// it isn't. Used for the Login page's Pi connection dot.
 export async function checkPiHealth() {
-  return false;
+  try {
+    const res = await fetch(`${API_BASE}/pi/health`);
+    if (!res.ok) return false;
+    const data = await res.json().catch(() => ({}));
+    return data.ok === true;
+  } catch {
+    return false;
+  }
 }
 
 // POST /sessions — real endpoint (software/routes.py). Returns
@@ -89,6 +95,13 @@ export async function finalizeSession(sessionCode, excludedUsernames = []) {
 // apiFetch). GET /sessions/{code}/booklets/{id}/pdf streams it inline.
 export function bookletPdfUrl(sessionCode, bookletId) {
   return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}/pdf`;
+}
+
+// GET /pi/stream — real endpoint (software/routes.py). Server-side passthrough
+// of the Pi hardware server's MJPEG feed. Point an <img> at this (not via
+// apiFetch); the browser renders multipart/x-mixed-replace natively.
+export function piStreamUrl() {
+  return `${API_BASE}/pi/stream`;
 }
 
 // POST /detect-preview — real endpoint (software/routes.py:249-270). Used by

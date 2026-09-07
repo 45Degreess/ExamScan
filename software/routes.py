@@ -630,6 +630,64 @@ async def download_run_archive(run_id: str):
     )
 
 
+@router.get("/pi/health")
+async def pi_health():
+    """
+    Relay the Pi hardware server's GET {RUNS_API_BASE_URL}/api/health so the
+    browser gets a same-origin answer for its connection dot. A reachable-but-
+    down Pi still returns HTTP 200 with {"ok": false} — only used for a status
+    light, so it should never look like a server error.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{RUNS_API_BASE_URL}/api/health")
+        resp.raise_for_status()
+        return JSONResponse(resp.json())
+    except httpx.HTTPError as e:
+        return JSONResponse({"ok": False, "detail": str(e)})
+
+
+@router.get("/pi/stream")
+async def pi_stream():
+    """
+    Stream the Pi hardware server's MJPEG feed (GET {RUNS_API_BASE_URL}/stream)
+    straight through, so the frontend can point an <img> at /api/pi/stream
+    instead of needing direct network/CORS access to the Pi. The upstream feed
+    never ends, so the client is left open with no read timeout and torn down
+    when the caller disconnects.
+    """
+    client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None))
+    try:
+        req = client.build_request("GET", f"{RUNS_API_BASE_URL}/stream")
+        resp = await client.send(req, stream=True)
+    except httpx.HTTPError as e:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Could not reach Pi stream: {e}")
+    if resp.status_code != 200:
+        await resp.aclose()
+        await client.aclose()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Pi stream returned status {resp.status_code}.",
+        )
+
+    async def body():
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        body(),
+        media_type=resp.headers.get(
+            "content-type", "multipart/x-mixed-replace; boundary=frame"
+        ),
+        headers={"Cache-Control": "no-cache, private", "Pragma": "no-cache"},
+    )
+
+
 @router.get("/samples")
 async def list_samples():
     """Return sorted list of sample image filenames."""
