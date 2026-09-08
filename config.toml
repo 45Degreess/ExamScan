@@ -32,7 +32,7 @@ step_delay = 0.002
 fast_delay = 0.001
 default_turn_seconds = 3.0
 default_degrees = 190.0
-default_clockwise = true
+default_clockwise = false
 invert_direction = false
 # Page-turn geometry: out page_turn_degrees, then shared_degrees alongside the
 # other motor, then home. The final return stops return_short_degrees short, so
@@ -51,7 +51,7 @@ steps_per_rev = 200
 step_delay = 0.004
 fast_delay = 0.001
 default_degrees = 190.0
-default_clockwise = true
+default_clockwise = false
 # This motor's coils are wired so DIR high is clockwise, the opposite of
 # [motor]. Inverting here means "clockwise" means clockwise for both.
 invert_direction = true
