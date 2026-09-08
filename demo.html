@@ -36,6 +36,49 @@
             transition: opacity 0.05s ease-in;
         }
         #flash.go { opacity: 1; }
+        #handAlert {
+            position: absolute;
+            inset: 0;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background: rgba(120, 0, 0, 0.72);
+            color: #fff;
+            font-size: 30px;
+            font-weight: bold;
+            text-align: center;
+            padding: 20px;
+            pointer-events: none;
+        }
+        #handAlert.show { display: flex; }
+        #handAlert.clearing { background: rgba(120, 82, 0, 0.72); }
+        #handAlert .sub { font-size: 17px; font-weight: normal; opacity: 0.92; }
+        #visionDiagnostics {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            display: none;
+            padding: 9px 11px;
+            border-radius: 6px;
+            background: rgba(0, 0, 0, 0.72);
+            color: #dff7ff;
+            font: 13px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+            white-space: pre;
+            pointer-events: none;
+            z-index: 3;
+        }
+        #visionDiagnostics.show { display: block; }
+        #bedRegion {
+            position: absolute;
+            display: none;
+            border: 2px dashed #5ce1e6;
+            background: rgba(92, 225, 230, 0.05);
+            pointer-events: none;
+            z-index: 2;
+        }
+        #bedRegion.show { display: block; }
         #controls {
             width: min(100%, 1200px);
             display: flex;
@@ -61,6 +104,7 @@
         #status { color: #ccc; font-size: 14px; min-width: 240px; }
         #status.error { color: #ff8fa3; }
         #status.busy { color: #ffd166; }
+        #status.paused { color: #ff6b6b; font-weight: bold; }
         #counter { color: #4cc9f0; font-size: 14px; font-weight: bold; }
         #archiveLink[hidden] { display: none; }
     </style>
@@ -69,11 +113,18 @@
     <div id="viewer">
         <img id="feed" alt="Camera feed" />
         <div id="flash"></div>
+        <div id="bedRegion"></div>
+        <div id="visionDiagnostics"></div>
+        <div id="handAlert">
+            <div id="handTitle">&#9995; HAND DETECTED &mdash; WAITING FOR CLEAR</div>
+            <div class="sub" id="handPhase"></div>
+            <div class="sub" id="handInstruction">Clear the scan area to continue.</div>
+        </div>
     </div>
     <div id="controls">
-        <button id="scanBtn" onclick="scanStep()">Scan Page</button>
-        <button id="autoBtn" class="secondary" onclick="autoScan()">Auto Scan</button>
-        <button id="completeBtn" class="secondary" onclick="completeRun()">Finish Run</button>
+        <button id="scanBtn" onclick="scanStep()" disabled>Scan Page</button>
+        <button id="autoBtn" class="secondary" onclick="autoScan()" disabled>Auto Scan</button>
+        <button id="completeBtn" class="secondary" onclick="completeRun()" disabled>Finish Run</button>
         <a id="archiveLink" class="button secondary" hidden>Download Images (ZIP)</a>
         <div id="meta">
             <div id="status">Ready</div>
@@ -83,6 +134,7 @@
     <script>
         let runId = null;
         let busy = false;
+        let scanAreaReady = false;
 
         document.addEventListener("keydown", (e) => {
             if (e.key === "Enter") scanStep();
@@ -95,7 +147,10 @@
             const img = document.getElementById("feed");
             img.src = "/stream?" + Date.now();
             img.onerror = () => {
-                if (!busy) setTimeout(startStream, 1000);
+                // Capturing a still temporarily closes the MJPEG connection.
+                // Keep reconnecting during a run so the live obstruction state
+                // becomes visible again as soon as the preview stream returns.
+                setTimeout(startStream, 1000);
             };
         }
 
@@ -107,10 +162,14 @@
 
         function setBusy(value, label) {
             busy = value;
-            for (const id of ["scanBtn", "autoBtn", "completeBtn"]) {
-                document.getElementById(id).disabled = value;
-            }
+            updateControls();
             if (label) setStatus(label);
+        }
+
+        function updateControls() {
+            for (const id of ["scanBtn", "autoBtn", "completeBtn"]) {
+                document.getElementById(id).disabled = busy || !scanAreaReady;
+            }
         }
 
         function flash() {
@@ -133,6 +192,125 @@
         function updateCount(count) {
             document.getElementById("counter").textContent =
                 count + " page" + (count === 1 ? "" : "s") + " in current run";
+        }
+
+        let healthTimer = null;
+
+        function displayNumber(value, digits = 1) {
+            return typeof value === "number" ? value.toFixed(digits) : "--";
+        }
+
+        function updateVisionDiagnostics(detection) {
+            const panel = document.getElementById("visionDiagnostics");
+            const bed = document.getElementById("bedRegion");
+            const enabled = detection.debug_overlay === true;
+            panel.classList.toggle("show", enabled);
+            if (!enabled) {
+                bed.classList.remove("show");
+                return;
+            }
+            panel.textContent = [
+                `state       ${detection.state || "unknown"}`,
+                `region      ${detection.region || "--"}`,
+                `source      ${detection.source_width || "--"}x${detection.source_height || "--"}`,
+                `rate        ${displayNumber(detection.effective_fps)} fps`,
+                `inference   ${displayNumber(detection.inference_ms)} ms`,
+                `palm        ${displayNumber(detection.palm_score, 3)}`,
+                `presence    ${displayNumber(detection.presence_score, 3)}`,
+                `exposure    ${displayNumber(detection.exposure_time_us, 0)} us`,
+                `gain        ${displayNumber(detection.analogue_gain, 2)}`
+            ].join("\n");
+
+            const roi = detection.bed_roi;
+            const showBed = detection.region === "bed" && Array.isArray(roi) && roi.length === 4;
+            bed.classList.toggle("show", showBed);
+            if (showBed) {
+                bed.style.left = `${roi[0] * 100}%`;
+                bed.style.top = `${roi[1] * 100}%`;
+                bed.style.width = `${(roi[2] - roi[0]) * 100}%`;
+                bed.style.height = `${(roi[3] - roi[1]) * 100}%`;
+            }
+        }
+
+        function showObstructionAlert(health) {
+            const detection = health.hand_detection || {};
+            const state = detection.state || "unknown";
+            const alert = document.getElementById("handAlert");
+            const title = document.getElementById("handTitle");
+            const instruction = document.getElementById("handInstruction");
+            const isHand = detection.hand_present === true ||
+                state === "confirmed" || state === "candidate";
+            const isClearing = state === "clear" && detection.safe_to_move === false;
+
+            alert.classList.add("show");
+            alert.classList.toggle("clearing", isClearing);
+            document.getElementById("handPhase").textContent = health.paused
+                ? "Stopped at phase " + health.paused_phase
+                : "Movement and capture are inhibited.";
+
+            if (isHand) {
+                title.innerHTML = "&#9995; HAND DETECTED &mdash; WAITING FOR CLEAR";
+                instruction.textContent = "Remove the hand from the scan area to continue.";
+                setStatus("Hand detected - waiting for clear", "paused");
+            } else if (isClearing) {
+                const count = detection.clear_count || 0;
+                const required = detection.clear_frames || 1;
+                title.textContent = "VERIFYING CLEAR SCAN AREA";
+                instruction.textContent =
+                    `Clear reading ${count} of ${required}; movement remains inhibited.`;
+                setStatus("Verifying clear scan area...", "busy");
+            } else {
+                title.textContent = "VISION UNAVAILABLE — MOVEMENT INHIBITED";
+                instruction.textContent = detection.reason ||
+                    "Waiting for a valid camera reading.";
+                setStatus("Vision unavailable - waiting", "paused");
+            }
+        }
+
+        function hideHandAlert() {
+            const alert = document.getElementById("handAlert");
+            alert.classList.remove("show", "clearing");
+        }
+
+        async function pollHealth() {
+            const wasReady = scanAreaReady;
+            try {
+                const response = await fetch("/api/health", { cache: "no-store" });
+                const health = await response.json();
+                const detection = health.hand_detection || {};
+                updateVisionDiagnostics(detection);
+                scanAreaReady = detection.safe_to_move !== undefined
+                    ? detection.safe_to_move === true
+                    : health.hand_present === false;
+                updateControls();
+                if (scanAreaReady) {
+                    hideHandAlert();
+                    if (!wasReady && !busy) setStatus("Scan area clear");
+                } else {
+                    showObstructionAlert(health);
+                }
+            } catch (error) {
+                updateVisionDiagnostics({ debug_overlay: false });
+                scanAreaReady = false;
+                updateControls();
+                showObstructionAlert({
+                    paused: false,
+                    hand_detection: {
+                        state: "error",
+                        safe_to_move: false,
+                        reason: "The obstruction monitor could not be reached."
+                    }
+                });
+            }
+        }
+
+        // Health is watched for the lifetime of the page, not only while a run
+        // is active. This makes idle hand detections visible on the preview and
+        // keeps controls disabled through the clear-frame debounce.
+        function watchHealth() {
+            if (healthTimer) return;
+            pollHealth();
+            healthTimer = setInterval(pollHealth, 250);
         }
 
         async function request(path, options) {
@@ -160,7 +338,6 @@
             if (busy) return;
             setBusy(true, label);
             flash();
-            document.getElementById("feed").src = "";
             try {
                 const id = await ensureRun();
                 const data = await makeRequest(id);
@@ -205,7 +382,10 @@
             }
         }
 
-        window.onload = startStream;
+        window.onload = () => {
+            startStream();
+            watchHealth();
+        };
     </script>
 </body>
 </html>
