@@ -4,6 +4,10 @@ A Raspberry Pi-based document scanner that captures high-resolution images of ex
 fixed overhead camera and advances pages automatically. Each scanning run is saved as a folder of
 JPEGs, downloadable as a ZIP.
 
+The camera watches the bed throughout, and a hand appearing at any point stops the mechanism
+where it stands and resumes once the area is clear — see
+[Obstruction detection](#obstruction-detection).
+
 A page turn has sixteen phases, driving two clamps, the arm, the fan and both steppers:
 
 1. **Drop the small clamp** onto the stack and hold it (`page_clamp_small`)
@@ -87,6 +91,7 @@ ExamScan/
 ├── hardware/
 │   ├── camera.py       # Camera streaming and capture
 │   ├── fan.py          # PWM fan and tachometer (raw pigpio hardware PWM)
+│   ├── vision.py       # hand detection and the page-turn gate
 │   ├── motor.py        # Stepper motor (step/dir)
 │   └── servo.py        # Servo control (page drop, clamps)
 ├── tests/              # Test suite (runs without hardware)
@@ -136,8 +141,26 @@ doesn't specify a count. It applies live — no restart needed.
 | `fan.tach_pulses_per_rev` | Tach pulses per revolution, used to convert edges to RPM |
 | `workflow.*_pause` | Settling time at each phase boundary |
 | `workflow.small_clamp_hold_seconds` | Dwell on the small clamp's first drop, before the fan starts |
+| `camera.lores_width` / `lores_height` | Size of the second camera stream the obstruction check reads |
+| `camera.exposure_mode` | `short` reduces motion blur; `normal` is the rollback setting |
+| `obstruction.enabled` | False skips the check entirely and never loads the model |
+| `obstruction.mode` | `full` verifies palm candidates with landmarks; `palm` is the rollback mode |
+| `obstruction.min_confidence` | Minimum palm score sent to the landmark stage |
+| `obstruction.min_presence_confidence` | Landmark score that confirms a hand |
+| `obstruction.min_candidate_presence_confidence` | Compatibility setting; every decoded palm now remains fail-closed regardless of landmark score |
+| `obstruction.max_hands` / `inference_threads` | Candidate limit and LiteRT CPU worker count |
+| `obstruction.target_interval` | Target time between frame starts; an overrun starts the next frame immediately |
+| `obstruction.poll_interval` | Backward-compatible wait cadence used by blocking callers |
+| `obstruction.source_width` / `source_height` | Expected obstruction-stream size, checked against each converted frame |
+| `obstruction.bed_roi` | Normalized scan-bed rectangle, including the calibrated hazard margin |
+| `obstruction.region_schedule` | Repeating crop schedule; shipped as `bed`, `bed`, `full` |
+| `obstruction.debug_overlay` | Shows operator diagnostics and the active bed rectangle on the preview |
+| `obstruction.clear_frames` | Consecutive clear readings needed before a turn may start |
+| `obstruction.stale_after_seconds` | A reading older than this is treated as no reading at all |
+| `obstruction.wait_timeout_seconds` | How long a page turn waits for the bed to clear before failing |
 
-All apply live. The shipped `config.toml` carries values tuned on the rig.
+Workflow and CORS settings apply live. Camera, obstruction and pin changes require a restart. The
+shipped `config.toml` carries values tuned on the rig.
 
 ### Servo holding force
 
@@ -272,6 +295,94 @@ than scaling the result.
 speeds, `q` exits, and measured RPM prints every few seconds.
 
 Requires the pigpio daemon (see [Setup](#2-enable-the-pigpio-daemon)).
+
+## Obstruction detection
+
+The mechanism brings clamps, the arm and the fan down onto the bed, in the same space an
+operator's hands occupy when loading a booklet or clearing a misfeed. A background thread watches
+the camera and `page_turn()` refuses to start while a hand is in frame.
+
+`hardware/vision.py` runs Google's palm detector and 21-point hand-landmark model over a second,
+960x540 camera stream (`camera.lores_*`) on a background thread. The aspect ratio matches the
+preview and selected sensor mode. The repeating `bed`, `bed`, `full` schedule enlarges hands in a
+calibrated scan-bed crop while retaining periodic coverage of the entire image. The shipped ROI is
+the whole frame until it can be calibrated from a known-safe preview, so no hazardous area is
+excluded by an assumed crop.
+
+The palm model proposes a rotated hand crop; the monitor publishes that candidate immediately,
+before the landmark stage completes. The landmark model may promote it to `confirmed`, but cannot
+turn a decoded palm into `clear`; only a frame with no qualifying palm contributes to the
+five-reading clearance debounce. Frames start on a target-period schedule, so inference time is
+not followed by an additional fixed sleep. `page_turn()` polls the verdict continuously — inside
+every stepper run, every servo ramp and every settle, not just at phase boundaries.
+
+### Stopping and resuming
+
+A hand stops the mechanism **where it stands**, mid-move if need be, and the sequence continues
+from that exact point once the area clears:
+
+```
+!! HAND DETECTED - paused at phase 6/16 (motor 1 out)
+   waiting for the scan area to clear...
+-> area clear, resuming phase 6/16 (motor 1 out)
+```
+
+`/api/health` keeps the backward-compatible `hand_present` value and adds `hand_detection` with
+the mode, state, palm and presence scores, confirmed-hand count, inference time, reading age,
+source resolution, active region, effective sampling rate, exposure, analogue gain and error. The
+demo page polls the health response to show a full-screen banner. Setting `debug_overlay = true`
+also shows these diagnostics and the active bed rectangle without exposing landmark coordinates.
+
+Resuming continues the **remainder** of an interrupted move rather than repeating it. Re-running a
+400-step run that stopped at step 250 would turn the wheel 250 steps too far, and since nothing
+measures wheel position it would creep silently on every interrupted page.
+
+Motion stops, but static holds do not:
+
+- **The fan stops.** Spinning blades are the actual hazard, and it is the only part that keeps
+  moving on its own once commanded. It spins back up on resume.
+- **The steppers stay energised.** A stationary energised motor is not a hazard, and de-energising
+  motor 1 mid-turn would let the wheel slip under the clamp and lose the position the resume
+  depends on.
+- **Servo holds are re-asserted** for as long as the pause lasts. `max_hold_seconds` detaches a
+  held servo on a timer rather than raising, so an unattended pause would otherwise end with the
+  clamps limp and the page dropped, silently.
+
+If the area never clears, `obstruction.wait_timeout_seconds` expires: the fan goes off, the
+steppers are de-energised, the servos are released, and `POST /page-turn` returns 409 naming the
+phase it stopped at. Recovery is deliberately manual — moving the mechanism unasked is the wrong
+default when the reason it stopped is that something was in it.
+
+### Why not the mediapipe package
+
+`pip install mediapipe` does work on a Pi 4 running Bookworm, whose system Python is 3.11. It does
+not work here. This is Debian 13 (trixie) with Python 3.13, and:
+
+- The camera pins the project to 3.13 — `libcamera`'s binding is an apt package compiled as
+  `_libcamera.cpython-313-aarch64-linux-gnu.so`, reached through `include-system-site-packages`.
+- mediapipe's only py3.13 build (`1.0.1`) is compiled requiring AES instructions. The Pi 4's
+  Cortex-A72 reports `fp asimd evtstrm crc32 cpuid` and no `aes`, so it dies with SIGILL.
+- The aarch64 wheels that do run here (`0.10.13`–`0.10.18`) stop at cp312.
+
+So both `hand_detector.tflite` and `hand_landmarks_detector.tflite` are extracted from the official
+float16 Hand Landmarker v1 bundle and run through LiteRT, which does work on 3.13. The code
+reproduces MediaPipe's 2,016-anchor decoding, weighted suppression, rotated hand crop and landmark
+presence check. `obstruction.mode = "palm"` retains the previous score-only path for rollback.
+The landmark model is the official float16 v1 asset; its SHA-256 is
+`6acda74af3fbf40e68265c20c7394b2bad81a16a481dcd79ad7a081887c3d6b9`.
+
+### Input scaling
+
+The model wants pixels in `[0, 1]`. Scaling to `[-1, 1]` instead saturates every logit and reports
+a hand in a blank frame, which would jam the gate shut on a working rig. `tests/test_vision.py`
+pins this down against a real photograph rather than trusting it.
+
+### What it does not cover
+
+- **It is not a safety interlock.** The verdict is at most one poll interval old and inference is
+  not instantaneous. It supports a hardware stop rather than replacing one.
+- **Hands only.** A pen or a sleeve on the bed goes through undetected.
+- **It cannot undo motion already made.** It stops the next step, not the one in progress.
 
 ## Setup
 
