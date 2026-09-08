@@ -1,6 +1,6 @@
 import { apiFetch, API_BASE } from "./client.js";
 
-// GET /health — real endpoint (software/routes.py:215-217), used for the
+// GET /health — real endpoint (software/routes.py), used for the
 // backend connection dot on the Login page.
 export async function checkBackendHealth() {
   try {
@@ -161,9 +161,9 @@ export function piStreamUrl() {
   return `${API_BASE}/pi/stream`;
 }
 
-// POST /detect-preview — real endpoint (software/routes.py:249-270). Used by
-// the Debug page's "Outline Page Frame Only" button, which is a genuine
-// existing backend capability so it is wired for real rather than mocked.
+// POST /detect-preview — real endpoint (software/routes.py). Used by the Debug
+// page's "Outline Page Frame Only" button, which is a genuine existing backend
+// capability so it is wired for real rather than mocked.
 export async function detectPreview(file) {
   const fd = new FormData();
   fd.append("file", file);
