@@ -10,6 +10,8 @@ dependencies = [
     "picamera2>=0.3.36",
     "rpi-lgpio>=0.6",
     "rpimotorlib>=4.0.0",
+    "ai-edge-litert>=1.0.1",
+    "opencv-python-headless>=4.10",
 ]
 
 [project.scripts]
@@ -32,6 +34,7 @@ only-include = [
     "config.py",
     "runs.py",
     "hardware",
+    "models",
 ]
 
 [dependency-groups]

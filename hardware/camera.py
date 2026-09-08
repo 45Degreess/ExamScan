@@ -1,6 +1,7 @@
 from picamera2.encoders import MJPEGEncoder
 from picamera2.outputs import FileOutput
 from picamera2 import Picamera2
+from libcamera import controls
 import io
 import threading
 import time
@@ -31,6 +32,22 @@ class CameraController:
         self.picam2.start_recording(MJPEGEncoder(), FileOutput(self.stream_output))
         time.sleep(self.config["recording_start_delay"])
         self.streaming = True
+
+    def capture_array(self, name="lores"):
+        """A raw frame from one of the live streams, for the obstruction check.
+
+        Reads through the controller rather than the Picamera2 handle so callers
+        have one camera object to hold, and so the fakes can stand in for it.
+        """
+        return self.picam2.capture_array(name)
+
+    def capture_array_with_metadata(self, name="lores"):
+        """Return the newest frame and metadata from the same camera request."""
+        request = self.picam2.capture_request(wait=True, flush=True)
+        try:
+            return request.make_array(name), request.get_metadata()
+        finally:
+            request.release()
 
     def capture_file(self, path):
         print(f"Capturing {path.name}...")
@@ -90,14 +107,25 @@ def make_camera(config):
     capture_size = (config["capture_width"], config["capture_height"])
     frame_duration = round(1_000_000 / config["frame_rate"])
 
+    # A second, small stream for the obstruction detector. Taking it from the
+    # ISP costs nothing and avoids decoding the MJPEG stream, which carries
+    # encoded JPEG bytes rather than pixels.
+    lores_size = (config["lores_width"], config["lores_height"])
+    exposure_mode = {
+        "normal": controls.AeExposureModeEnum.Normal,
+        "short": controls.AeExposureModeEnum.Short,
+    }[config["exposure_mode"]]
+
     camera_config = picam2.create_video_configuration(
         main={"size": preview_size},
+        lores={"size": lores_size},
         buffer_count=config["buffer_count"],
         controls={
             "FrameRate": config["frame_rate"],
             "FrameDurationLimits": (frame_duration, frame_duration),
             "AfMode": 0,
             "LensPosition": config["lens_position"],
+            "AeExposureMode": exposure_mode,
         },
     )
 
