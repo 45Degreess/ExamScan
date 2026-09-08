@@ -391,3 +391,50 @@ def test_a_second_hold_replaces_the_first_timer(monkeypatch):
     first, second = FakeTimer.instances
     assert first.cancelled is True
     assert second.cancelled is False
+
+
+def test_set_angle_reports_reaching_the_target(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    servo = module.ServoMotor.from_config(ramp_config())
+
+    assert servo.set_angle(90) is True
+
+
+def test_abort_stops_the_ramp_and_says_so(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    calls = {"n": 0}
+
+    def abort_after_2():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    assert servo.set_angle(90, abort_check=abort_after_2) is False
+    assert len(device.angles) == 2
+
+
+def test_an_aborted_ramp_leaves_an_honest_position(monkeypatch):
+    """_last_angle must track the ramp, not jump to the target at the end.
+
+    Left stale, the next move would ramp from where this one began - so the arm
+    would snap back across everything it already travelled before setting off.
+    """
+    module = load_servo_module(monkeypatch)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    calls = {"n": 0}
+    servo.set_angle(90, abort_check=lambda: (calls.update(n=calls["n"] + 1), calls["n"] > 3)[1])
+
+    stopped_at = device.angles[-1]
+    device.angles.clear()
+    servo.set_angle(90)
+
+    # The resumed ramp starts from where the arm actually is, not from 0.
+    assert device.angles[0] != 0
+    assert min(device.angles) >= stopped_at

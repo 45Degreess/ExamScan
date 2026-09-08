@@ -128,14 +128,31 @@ class ServoMotor:
             angle = target if remaining <= size else angle + direction * size
             yield angle, delay
 
-    def set_angle(self, degrees, settle_time=None, slow_start=False, hold=False):
+    def set_angle(
+        self,
+        degrees,
+        settle_time=None,
+        slow_start=False,
+        hold=False,
+        abort_check=None,
+    ):
+        """Ramp to `degrees`, returning True if it got there.
+
+        abort_check is polled between ramp steps; returning True stops the ramp
+        where it stands and returns False. The arm is left wherever it reached,
+        and _last_angle is kept honest step by step so a later move continues
+        from the real position instead of jerking back to where this one began.
+        """
         steps = list(self._steps(self._last_angle, degrees, slow_start))
         if not steps:
             # Already there - still command it, so a detached servo re-engages.
             steps = [(degrees, 0.0)]
 
         for angle, delay in steps:
+            if abort_check is not None and abort_check():
+                return False
             self._servo.angle = angle
+            self._last_angle = angle
             time.sleep(delay)
 
         self._last_angle = degrees
@@ -146,6 +163,7 @@ class ServoMotor:
             self._start_hold()
         elif self.detach_after_move:
             self.detach()
+        return True
 
     def _start_hold(self):
         """Stay powered so the servo actually grips, with a safety cut-off.

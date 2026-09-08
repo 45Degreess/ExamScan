@@ -51,28 +51,50 @@ class StepperMotor:
     def disable(self):
         GPIO.output(self._enable_pin, GPIO.HIGH)
 
-    def move_steps(self, steps, clockwise=True, step_delay=None, keep_enabled=False):
-        """Pulse out `steps`, de-energising afterwards unless asked not to.
+    def move_steps(
+        self,
+        steps,
+        clockwise=True,
+        step_delay=None,
+        keep_enabled=False,
+        abort_check=None,
+    ):
+        """Pulse out `steps`, returning how many were actually done.
 
         keep_enabled leaves the coils powered so the motor holds position
         against a load. Re-enabling after the fact would leave a window where
         the shaft is free to slip, which is the whole thing being avoided.
+
+        abort_check is polled once per step; returning True stops the move
+        where it stands. The count comes back so the caller can pick up the
+        remainder later - re-issuing the whole move instead would turn the
+        wheel by however far it already got, twice.
         """
         delay = self._step_delay if step_delay is None else step_delay
         turn_cw = clockwise != self._invert_direction
         GPIO.output(self._dir_pin, GPIO.LOW if turn_cw else GPIO.HIGH)
         self.enable()
+        done = 0
         for _ in range(steps):
+            if abort_check is not None and abort_check():
+                break
             GPIO.output(self._step_pin, GPIO.HIGH)
             time.sleep(delay)
             GPIO.output(self._step_pin, GPIO.LOW)
             time.sleep(delay)
-        if not keep_enabled:
+            done += 1
+        # An interrupted move keeps the coils live whatever was asked: the
+        # caller means to resume, and letting go now would drop the position
+        # that resuming depends on.
+        if not keep_enabled and done == steps:
             self.disable()
+        return done
 
-    def move_degrees(self, degrees, clockwise=True, keep_enabled=False):
+    def move_degrees(self, degrees, clockwise=True, keep_enabled=False, abort_check=None):
         steps = round(self._steps_per_rev * degrees / 360)
-        self.move_steps(steps, clockwise, keep_enabled=keep_enabled)
+        return self.move_steps(
+            steps, clockwise, keep_enabled=keep_enabled, abort_check=abort_check
+        )
 
     def cleanup(self):
         self.disable()

@@ -187,3 +187,62 @@ def test_move_degrees_passes_keep_enabled_through(monkeypatch):
     motor.move_degrees(90, clockwise=True, keep_enabled=True)
 
     assert gpio.outputs[-1] != (16, gpio.HIGH)
+
+
+def test_move_steps_reports_how_many_it_did(monkeypatch):
+    gpio = FakeGPIO()
+    module = load_motor_module(monkeypatch, gpio)
+    motor = build(module)
+
+    assert motor.move_steps(5) == 5
+
+
+def test_abort_stops_the_move_where_it_stands(monkeypatch):
+    """The count is what lets a caller resume without turning twice.
+
+    Re-issuing the whole move after an abort would add the steps already taken
+    on top, creeping the wheel round on every interrupted page.
+    """
+    gpio = FakeGPIO()
+    module = load_motor_module(monkeypatch, gpio)
+    motor = build(module)
+
+    calls = {"n": 0}
+
+    def abort_after_3():
+        calls["n"] += 1
+        return calls["n"] > 3
+
+    done = motor.move_steps(10, abort_check=abort_after_3)
+
+    assert done == 3
+    assert gpio.outputs.count((21, gpio.HIGH)) == 3
+
+
+def test_an_aborted_move_keeps_the_coils_live(monkeypatch):
+    """Letting go mid-move would drop the position a resume depends on."""
+    gpio = FakeGPIO()
+    module = load_motor_module(monkeypatch, gpio)
+    motor = build(module)
+
+    motor.move_steps(10, abort_check=lambda: True)
+
+    assert gpio.outputs[-1] != (16, gpio.HIGH)
+
+
+def test_resuming_the_remainder_totals_the_original(monkeypatch):
+    gpio = FakeGPIO()
+    module = load_motor_module(monkeypatch, gpio)
+    motor = build(module)
+
+    calls = {"n": 0}
+
+    def abort_after_4():
+        calls["n"] += 1
+        return calls["n"] > 4
+
+    done = motor.move_steps(10, abort_check=abort_after_4)
+    done += motor.move_steps(10 - done)
+
+    assert done == 10
+    assert gpio.outputs.count((21, gpio.HIGH)) == 10
