@@ -11,6 +11,7 @@ from config import DEFAULT_CONFIG, ConfigManager
 from fakes import (
     FakeCamera,
     FakeFan,
+    FakeObstructionMonitor,
     FakeServo,
     FakeServoController,
     FakeStepperMotor,
@@ -127,6 +128,7 @@ def api_server(config_manager, config, sample_image):
         FakeStepperMotor(),
         FakeStepperMotor(),
         FakeFan(),
+        FakeObstructionMonitor(),
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

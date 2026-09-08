@@ -8,6 +8,7 @@ from hardware.camera import CameraController, StreamOutput, make_camera
 from hardware.fan import FanController
 from hardware.motor import StepperMotor
 from hardware.servo import ServoController
+from hardware.vision import HandDetector, ObstructionMonitor
 
 
 def build_hardware(config):
@@ -26,4 +27,12 @@ def build_hardware(config):
     # off from the moment the stack exists rather than spinning up on a
     # floating line.
     fan = FanController.from_config(config["fan"])
-    return camera, servos, stepper, stepper2, fan
+    # Disabled leaves the model unloaded entirely, so a rig without it still
+    # runs - the page turn simply goes unguarded.
+    obstruction = None
+    if config["obstruction"]["enabled"]:
+        detector = HandDetector.from_config(config["obstruction"])
+        obstruction = ObstructionMonitor.from_config(
+            camera, detector, config["obstruction"]
+        )
+    return camera, servos, stepper, stepper2, fan, obstruction

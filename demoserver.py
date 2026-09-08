@@ -40,7 +40,7 @@ class DemoHandler(ExamScanHandler):
 
 def main():
     config_manager, config = load_config()
-    camera, servos, stepper, stepper2, fan = build_hardware(config)
+    camera, servos, stepper, stepper2, fan, obstruction = build_hardware(config)
 
     camera.start_recording()
 
@@ -52,6 +52,7 @@ def main():
         stepper,
         stepper2,
         fan,
+        obstruction,
         banner=BANNER,
         handler=DemoHandler,
     )

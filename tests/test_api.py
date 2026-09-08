@@ -10,6 +10,7 @@ from tests.conftest import (
     ApiClient,
     FakeCamera,
     FakeFan,
+    FakeObstructionMonitor,
     FakeServoController,
     FakeStepperMotor,
 )
@@ -132,6 +133,7 @@ def test_custom_handler_overrides_root_but_inherits_the_api(
         FakeStepperMotor(),
         FakeStepperMotor(),
         FakeFan(),
+        FakeObstructionMonitor(),
         handler=PageHandler,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -347,24 +349,28 @@ def test_page_turn_order_hands_the_page_between_the_clamps(api_client, api_serve
     order = []
 
     def record(label, servo):
-        def set_angle(degrees, settle_time=None, slow_start=False, hold=False):
+        def set_angle(
+            degrees, settle_time=None, slow_start=False, hold=False, abort_check=None
+        ):
             order.append(f"{label}:{degrees}")
+            return True
 
         servo.set_angle = set_angle
 
     record("small", api_server.servos.page_clamp_small)
     record("big", api_server.servos.page_clamp_big)
     record("arm", api_server.servos.page_drop)
-    api_server.stepper.move_steps = (
-        lambda steps, clockwise=True, step_delay=None, keep_enabled=False: order.append(
-            f"m1:{'cw' if clockwise else 'ccw'}"
-        )
-    )
-    api_server.stepper2.move_steps = (
-        lambda steps, clockwise=True, step_delay=None, keep_enabled=False: order.append(
-            f"m2:{'cw' if clockwise else 'ccw'}"
-        )
-    )
+    def stepper_stub(label):
+        def move_steps(
+            steps, clockwise=True, step_delay=None, keep_enabled=False, abort_check=None
+        ):
+            order.append(f"{label}:{'cw' if clockwise else 'ccw'}")
+            return steps
+
+        return move_steps
+
+    api_server.stepper.move_steps = stepper_stub("m1")
+    api_server.stepper2.move_steps = stepper_stub("m2")
 
     run_id = api_client.post("/api/runs").json["run_id"]
     api_client.post(f"/api/runs/{run_id}/page-turn")
@@ -430,3 +436,204 @@ def test_concurrent_hardware_actions_return_409(api_server, api_client, sample_i
     assert first["response"].status == 200
     assert second.status == 409
     assert second.json["error"].startswith("hardware is busy")
+
+
+def test_page_turn_is_refused_while_a_hand_is_present(api_client, api_server):
+    """The mechanism comes down on the bed, so it must not start on a hand."""
+    api_server.obstruction.hand_present = True
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    assert response.status == 409
+    assert "not clear" in response.json["error"]
+    # Nothing moved and the fan never started.
+    assert api_server.stepper.moves == []
+    assert api_server.servos.page_clamp_small.angles == []
+    assert api_server.fan.duty_pct == 0
+
+
+def test_capture_waits_for_an_idle_hand_to_clear(api_client, api_server):
+    """The continuous idle verdict gates capture as well as page motion."""
+    api_server.obstruction.hand_present = True
+    api_server.obstruction.clear_after_polls = 3
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/capture")
+
+    assert response.status == 200
+    assert response.json["page_count"] == 1
+    assert api_server.obstruction.waits == 1
+
+
+def test_capture_times_out_without_writing_while_hand_remains(api_client, api_server):
+    api_server.obstruction.hand_present = True
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/capture")
+
+    assert response.status == 409
+    assert "not clear" in response.json["error"]
+    manifest = api_client.get(f"/api/runs/{run_id}").json
+    assert manifest["page_count"] == 0
+    assert any(error["operation"] == "capture" for error in manifest["errors"])
+
+
+def test_page_turn_pauses_and_resumes_when_the_hand_clears(api_client, api_server):
+    """A hand stops the turn where it stands; withdrawing it lets it finish."""
+    api_server.obstruction.hand_present = True
+    api_server.obstruction.clear_after_polls = 3
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    assert response.status == 200
+    assert len(api_server.stepper.moves) == 4
+    assert api_server.obstruction.waits >= 1
+
+
+def test_a_refused_page_turn_is_recorded_in_the_manifest(api_client, api_server):
+    """An unattended auto-scan needs the reason it stopped written down."""
+    api_server.obstruction.hand_present = True
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    manifest = api_client.get(f"/api/runs/{run_id}").json
+    assert any(e["operation"] == "page-turn" for e in manifest["errors"])
+
+
+def test_the_gate_is_polled_throughout_the_turn(api_client, api_server):
+    """Not just at the start - a hand can arrive at any point in the sequence.
+
+    Every move and every settle checks, so the count runs far past the sixteen
+    phase boundaries a start-only gate would have managed.
+    """
+    run_id = api_client.post("/api/runs").json["run_id"]
+    api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    assert api_server.obstruction.polls > 16
+
+
+def turn_totals(server):
+    """Net steps each motor was actually pulsed, by direction."""
+    def net(moves):
+        return sum(m["steps"] if m["clockwise"] else -m["steps"] for m in moves)
+
+    return net(server.stepper.moves), net(server.stepper2.moves)
+
+
+def test_an_interrupted_turn_moves_exactly_as_far_as_an_uninterrupted_one(
+    api_client, api_server
+):
+    """The whole reason resuming continues the remainder instead of restarting.
+
+    Re-running an interrupted move would add the steps already taken on top,
+    creeping both wheels round a little more on every interrupted page - and
+    nothing measures wheel position, so it would never surface.
+    """
+    run_id = api_client.post("/api/runs").json["run_id"]
+    api_client.post(f"/api/runs/{run_id}/page-turn")
+    clean = turn_totals(api_server)
+
+    api_server.stepper.moves.clear()
+    api_server.stepper2.moves.clear()
+    # Land the hand inside a stepper run, not between phases - a move cut off
+    # partway is the only case where restarting rather than resuming would show.
+    api_server.obstruction.polls = 0
+    api_server.obstruction.obstruct_after_polls = 40
+    api_server.obstruction.clear_after_polls = 3
+
+    api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    partial = [
+        m for m in api_server.stepper.moves + api_server.stepper2.moves
+        if m["steps"] != m["requested"]
+    ]
+    assert partial, "expected a move to be cut off mid-run"
+    assert turn_totals(api_server) == clean
+
+
+def test_a_turn_that_never_clears_stops_and_reports_where(api_client, api_server):
+    """The operator needs to know what state the mechanism was left in."""
+    api_server.obstruction.hand_present = True
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    assert response.status == 409
+    assert "stopped at phase" in response.json["error"]
+    # Safe state: fan off and nothing left driving.
+    assert api_server.fan.duty_pct == 0
+    assert api_server.stepper.enabled is False
+    assert api_server.stepper2.enabled is False
+
+
+def test_the_fan_is_off_while_paused_and_back_on_when_resumed(api_client, api_server):
+    """Spinning blades are the actual hazard, so the fan stops for a pause."""
+    api_server.obstruction.hand_present = True
+    api_server.obstruction.clear_after_polls = 40
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    # It ran, stopped, and ran again somewhere in the middle.
+    assert 100 in api_server.fan.duties
+    assert api_server.fan.duties.count(0) >= 2
+    assert api_server.fan.duty_pct == 0
+
+
+def test_health_reports_a_hand_without_a_run(api_client, api_server):
+    api_server.obstruction.hand_present = True
+
+    health = api_client.get("/api/health").json
+
+    assert health["hand_present"] is True
+    assert health["hand_detection"] == {
+        "mode": "fake",
+        "state": "confirmed",
+        "hand_present": True,
+        "safe_to_move": False,
+        "reason": "confirmed hand is in the scan area",
+        "clear_count": 0,
+        "clear_frames": 1,
+        "palm_score": None,
+        "presence_score": 1.0,
+        "confirmed_hands": 1,
+        "inference_ms": 0.0,
+        "source_width": 960,
+        "source_height": 540,
+        "region": "bed",
+        "bed_roi": [0.0, 0.0, 1.0, 1.0],
+        "effective_fps": 10.0,
+        "exposure_time_us": 8000.0,
+        "analogue_gain": 1.0,
+        "debug_overlay": False,
+        "checked_at_age_seconds": 0.0,
+        "error": None,
+    }
+    assert health["paused"] is False
+    assert health["paused_phase"] is None
+
+
+def test_holds_are_kept_alive_while_paused(api_client, api_server, config):
+    """A pause must not let the clamps quietly time out and drop the page.
+
+    max_hold_seconds detaches a held servo on a timer rather than raising, so
+    without re-asserting, a long pause would end with the grip already gone and
+    nothing having said so.
+    """
+    for name in ("page_clamp_small", "page_clamp_big"):
+        api_server.config["servos"][name]["max_hold_seconds"] = 1.0
+    api_server.obstruction.wait_timeout_seconds = 5.0
+    # Land the pause after the small clamp is holding, and sit there a while.
+    api_server.obstruction.obstruct_after_polls = 3
+    api_server.obstruction.clear_after_polls = 120
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    assert response.status == 200
+    holds = [a for a in api_server.servos.page_clamp_small.angles if a["hold"]]
+    # Two in the sequence itself; anything beyond that is the pause keeping it.
+    assert len(holds) > 2
