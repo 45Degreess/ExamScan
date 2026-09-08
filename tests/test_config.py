@@ -196,3 +196,113 @@ def test_fan_duty_outside_percent_range_is_rejected(config_manager, config):
 
     with pytest.raises(ConfigError, match="duty_pct"):
         config_manager._validate(changed)
+
+
+def test_obstruction_confidence_outside_zero_to_one_is_rejected(config_manager, config):
+    changed = deepcopy(config)
+    changed["obstruction"]["min_confidence"] = 1.5
+
+    with pytest.raises(ConfigError, match="min_confidence"):
+        config_manager._validate(changed)
+
+
+def test_obstruction_mode_is_validated(config_manager, config):
+    changed = deepcopy(config)
+    changed["obstruction"]["mode"] = "unsupported"
+
+    with pytest.raises(ConfigError, match="mode"):
+        config_manager._validate(changed)
+
+
+def test_candidate_presence_cannot_exceed_confirmation(config_manager, config):
+    changed = deepcopy(config)
+    changed["obstruction"]["min_candidate_presence_confidence"] = 0.75
+    changed["obstruction"]["min_presence_confidence"] = 0.5
+
+    with pytest.raises(ConfigError, match="min_candidate_presence_confidence"):
+        config_manager._validate(changed)
+
+
+def test_obstruction_change_requires_restart(config_manager, config):
+    changed = deepcopy(config)
+    changed["obstruction"]["min_confidence"] = 0.4
+
+    assert config_manager.restart_required(config, changed)
+
+
+def test_lores_stream_change_requires_restart(config_manager, config):
+    changed = deepcopy(config)
+    changed["camera"]["lores_width"] = 800
+
+    assert config_manager.restart_required(config, changed)
+
+
+def test_polling_slower_than_the_staleness_cutoff_is_rejected(config_manager, config):
+    """Every reading would age out before the next arrived.
+
+    The gate would then sit permanently shut on a rig that is working, which is
+    a config mistake worth catching at load rather than on the bench.
+    """
+    changed = deepcopy(config)
+    changed["obstruction"]["target_interval"] = 5.0
+    changed["obstruction"]["stale_after_seconds"] = 3.0
+
+    with pytest.raises(ConfigError, match="stale"):
+        config_manager._validate(changed)
+
+
+def test_clear_frames_must_be_at_least_one(config_manager, config):
+    changed = deepcopy(config)
+    changed["obstruction"]["clear_frames"] = 0
+
+    with pytest.raises(ConfigError, match="clear_frames"):
+        config_manager._validate(changed)
+
+
+def test_lores_dimensions_are_validated(config_manager, config):
+    changed = deepcopy(config)
+    changed["camera"]["lores_width"] = 0
+
+    with pytest.raises(ConfigError, match="lores_width"):
+        config_manager._validate(changed)
+
+
+def test_obstruction_source_must_match_the_camera_stream(config_manager, config):
+    changed = deepcopy(config)
+    changed["obstruction"]["source_width"] = 640
+
+    with pytest.raises(ConfigError, match="source size"):
+        config_manager._validate(changed)
+
+
+@pytest.mark.parametrize(
+    "roi",
+    [
+        [-0.1, 0.0, 1.0, 1.0],
+        [0.5, 0.0, 0.5, 1.0],
+        [0.0, 0.0, 1.1, 1.0],
+        [0.0, 0.0, 1.0],
+    ],
+)
+def test_bed_roi_is_normalized_and_ordered(config_manager, config, roi):
+    changed = deepcopy(config)
+    changed["obstruction"]["bed_roi"] = roi
+
+    with pytest.raises(ConfigError, match="bed_roi"):
+        config_manager._validate(changed)
+
+
+def test_region_schedule_must_include_a_full_frame(config_manager, config):
+    changed = deepcopy(config)
+    changed["obstruction"]["region_schedule"] = ["bed", "bed"]
+
+    with pytest.raises(ConfigError, match="include 'full'"):
+        config_manager._validate(changed)
+
+
+def test_exposure_mode_is_validated(config_manager, config):
+    changed = deepcopy(config)
+    changed["camera"]["exposure_mode"] = "very-short"
+
+    with pytest.raises(ConfigError, match="exposure_mode"):
+        config_manager._validate(changed)

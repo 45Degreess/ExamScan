@@ -15,6 +15,9 @@ capture_width = 4608
 capture_height = 2592
 frame_rate = 30
 buffer_count = 6
+lores_width = 960
+lores_height = 540
+exposure_mode = "short"
 recording_start_delay = 3.0
 capture_stop_delay = 0.2
 capture_settle_delay = 0.5
@@ -148,6 +151,29 @@ tach_pulses_per_rev = 2
 # before the arm drops onto the page.
 duty_pct = 100
 spinup_seconds = 3.0
+
+[obstruction]
+enabled = true
+mode = "full"
+model_path = "models/hand_detector.tflite"
+landmark_model_path = "models/hand_landmarks_detector.tflite"
+min_confidence = 0.3
+min_presence_confidence = 0.5
+min_candidate_presence_confidence = 0.01
+max_hands = 2
+inference_threads = 4
+poll_interval = 0.1
+target_interval = 0.1
+source_width = 960
+source_height = 540
+# Fail-safe default: use the whole image until a known-safe preview is used
+# to calibrate the scan-bed rectangle plus its five-percent margin.
+bed_roi = [0.0, 0.0, 1.0, 1.0]
+region_schedule = ["bed", "bed", "full"]
+debug_overlay = false
+clear_frames = 5
+stale_after_seconds = 3.0
+wait_timeout_seconds = 30.0
 
 [workflow]
 # Pauses between the page-turn phases: drop clamp, drop arm, stepper out

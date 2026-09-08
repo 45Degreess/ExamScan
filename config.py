@@ -30,6 +30,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "capture_height": 2592,
         "frame_rate": 30,
         "buffer_count": 6,
+        "lores_width": 960,
+        "lores_height": 540,
+        "exposure_mode": "short",
         "recording_start_delay": 3.0,
         "capture_stop_delay": 0.2,
         "capture_settle_delay": 0.5,
@@ -149,6 +152,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duty_pct": 100,
         "spinup_seconds": 3.0,
     },
+    "obstruction": {
+        "enabled": True,
+        "mode": "full",
+        "model_path": "models/hand_detector.tflite",
+        "landmark_model_path": "models/hand_landmarks_detector.tflite",
+        "min_confidence": 0.3,
+        "min_presence_confidence": 0.5,
+        "min_candidate_presence_confidence": 0.01,
+        "max_hands": 2,
+        "inference_threads": 4,
+        "poll_interval": 0.1,
+        "target_interval": 0.1,
+        "source_width": 960,
+        "source_height": 540,
+        # A full-frame default is deliberately fail-safe. Calibrate this from a
+        # known-safe preview before narrowing it to the physical scan bed.
+        "bed_roi": [0.0, 0.0, 1.0, 1.0],
+        "region_schedule": ["bed", "bed", "full"],
+        "debug_overlay": False,
+        "clear_frames": 5,
+        "stale_after_seconds": 3.0,
+        "wait_timeout_seconds": 30.0,
+    },
     "workflow": {
         "clamp_down_pause": 1.0,
         "servo_down_pause": 2.0,
@@ -228,6 +254,11 @@ class ConfigManager:
     def restart_required(
         self, old_config: dict[str, Any], new_config: dict[str, Any]
     ) -> bool:
+        for field in ("lores_width", "lores_height", "exposure_mode"):
+            if old_config["camera"][field] != new_config["camera"][field]:
+                return True
+        if old_config["obstruction"] != new_config["obstruction"]:
+            return True
         for section, fields in RESTART_FIELDS.items():
             for field in fields:
                 if old_config[section][field] != new_config[section][field]:
@@ -302,6 +333,11 @@ class ConfigManager:
             self._require_int(camera, key, "camera", minimum=1)
         self._require_int(camera, "frame_rate", "camera", minimum=1)
         self._require_int(camera, "buffer_count", "camera", minimum=1)
+        for key in ("lores_width", "lores_height"):
+            self._require_int(camera, key, "camera", minimum=1)
+        self._require_str(camera, "exposure_mode", "camera")
+        if camera["exposure_mode"] not in {"normal", "short"}:
+            raise ConfigError("camera.exposure_mode must be 'normal' or 'short'")
         self._require_number(camera, "lens_position", "camera", minimum=0)
         for key in (
             "recording_start_delay",
@@ -310,6 +346,95 @@ class ConfigManager:
             "capture_restart_delay",
         ):
             self._require_number(camera, key, "camera", minimum=0)
+
+        obstruction = config["obstruction"]
+        self._require_bool(obstruction, "enabled", "obstruction")
+        self._require_str(obstruction, "mode", "obstruction")
+        if obstruction["mode"] not in {"full", "palm"}:
+            raise ConfigError("obstruction.mode must be 'full' or 'palm'")
+        self._require_str(obstruction, "model_path", "obstruction")
+        self._require_str(obstruction, "landmark_model_path", "obstruction")
+        self._require_number(
+            obstruction, "min_confidence", "obstruction", minimum=0, maximum=1
+        )
+        self._require_number(
+            obstruction,
+            "min_presence_confidence",
+            "obstruction",
+            minimum=0,
+            maximum=1,
+        )
+        self._require_number(
+            obstruction,
+            "min_candidate_presence_confidence",
+            "obstruction",
+            minimum=0,
+            maximum=1,
+        )
+        if (
+            obstruction["min_candidate_presence_confidence"]
+            > obstruction["min_presence_confidence"]
+        ):
+            raise ConfigError(
+                "obstruction.min_candidate_presence_confidence cannot exceed "
+                "obstruction.min_presence_confidence"
+            )
+        self._require_int(obstruction, "max_hands", "obstruction", minimum=1, maximum=2)
+        self._require_int(
+            obstruction, "inference_threads", "obstruction", minimum=1, maximum=4
+        )
+        for key in (
+            "poll_interval",
+            "target_interval",
+            "stale_after_seconds",
+            "wait_timeout_seconds",
+        ):
+            self._require_number(obstruction, key, "obstruction", minimum=0)
+        for key in ("source_width", "source_height"):
+            self._require_int(obstruction, key, "obstruction", minimum=1)
+        if (
+            obstruction["source_width"] != camera["lores_width"]
+            or obstruction["source_height"] != camera["lores_height"]
+        ):
+            raise ConfigError(
+                "obstruction source size must match camera lores_width/lores_height"
+            )
+        roi = obstruction.get("bed_roi")
+        if (
+            not isinstance(roi, list)
+            or len(roi) != 4
+            or not all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in roi
+            )
+        ):
+            raise ConfigError("obstruction.bed_roi must contain four numbers")
+        left, top, right, bottom = roi
+        if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+            raise ConfigError(
+                "obstruction.bed_roi must be normalized [left, top, right, bottom]"
+            )
+        schedule = obstruction.get("region_schedule")
+        if (
+            not isinstance(schedule, list)
+            or not schedule
+            or not all(region in {"bed", "full"} for region in schedule)
+        ):
+            raise ConfigError(
+                "obstruction.region_schedule must be a non-empty list of 'bed'/'full'"
+            )
+        if "full" not in schedule:
+            raise ConfigError("obstruction.region_schedule must include 'full'")
+        self._require_bool(obstruction, "debug_overlay", "obstruction")
+        self._require_int(obstruction, "clear_frames", "obstruction", minimum=1)
+        # A reading older than the staleness cut-off is never treated as clear,
+        # so polling slower than that cut-off would keep the gate permanently
+        # shut on a rig that is working perfectly.
+        if obstruction["target_interval"] >= obstruction["stale_after_seconds"]:
+            raise ConfigError(
+                "obstruction.target_interval must be shorter than "
+                "obstruction.stale_after_seconds, or every reading is stale"
+            )
 
         self._validate_stepper("motor", config["motor"])
         self._validate_stepper("motor2", config["motor2"])
@@ -383,12 +508,15 @@ class ConfigManager:
         key: str,
         name: str,
         minimum: float | None = None,
+        maximum: float | None = None,
     ) -> None:
         value = section.get(key)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise ConfigError(f"{name}.{key} must be a number")
         if minimum is not None and value < minimum:
             raise ConfigError(f"{name}.{key} must be at least {minimum}")
+        if maximum is not None and value > maximum:
+            raise ConfigError(f"{name}.{key} must be at most {maximum}")
 
     def _validate_stepper(self, name: str, motor: dict[str, Any]) -> None:
         """Shared by [motor] and [motor2] - both drive a step/dir stepper."""
@@ -500,6 +628,9 @@ capture_width = 4608
 capture_height = 2592
 frame_rate = 30
 buffer_count = 6
+lores_width = 960
+lores_height = 540
+exposure_mode = "short"
 recording_start_delay = 3.0
 capture_stop_delay = 0.2
 capture_settle_delay = 0.5
@@ -614,6 +745,27 @@ tach_pin = 17
 tach_pulses_per_rev = 2
 duty_pct = 100
 spinup_seconds = 3.0
+
+[obstruction]
+enabled = true
+mode = "full"
+model_path = "models/hand_detector.tflite"
+landmark_model_path = "models/hand_landmarks_detector.tflite"
+min_confidence = 0.3
+min_presence_confidence = 0.5
+min_candidate_presence_confidence = 0.01
+max_hands = 2
+inference_threads = 4
+poll_interval = 0.1
+target_interval = 0.1
+source_width = 960
+source_height = 540
+bed_roi = [0.0, 0.0, 1.0, 1.0]
+region_schedule = ["bed", "bed", "full"]
+debug_overlay = false
+clear_frames = 5
+stale_after_seconds = 3.0
+wait_timeout_seconds = 30.0
 
 [workflow]
 clamp_down_pause = 1.0
