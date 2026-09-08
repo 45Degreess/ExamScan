@@ -1,10 +1,9 @@
 # final-ui
 
 Operator-facing rebuild of the ExamScan frontend. Login → Create Session →
-View Session → Debug. See `../docs/final-ui-api-requirements.md` and
-`../docs/software-compatibility-changes.md` for what the backend still needs
-to support this UI fully — several features here are backed by a temporary
-localStorage mock layer (`src/api/mockRuns.js`) until those endpoints exist.
+Prepare → View Session → Review, plus a Debug page. The UI is wired to the
+FastAPI backend in `software/`; see `../docs/final-ui-api-requirements.md` for
+the per-feature status (what's implemented and anything still outstanding).
 
 ## Run
 

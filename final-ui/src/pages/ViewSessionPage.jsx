@@ -18,14 +18,20 @@ const STATUS_LABEL = { complete: "Complete", processing: "Processing", error: "E
 
 // Backend booklet (software/routes.py GET /sessions/{code}/booklets) -> table row.
 function toRow(b) {
-  const lowConfidence =
-    b.confidence == null || b.confidence < 0.5 || b.course_code_verified === false;
+  // Confidence is only meaningful once OCR has run — leave processing/error
+  // rows neutral rather than flagging them red before there's a score.
+  let confidence = "gray";
+  if (b.status === "complete") {
+    const low =
+      b.confidence == null || b.confidence < 0.5 || b.course_code_verified === false;
+    confidence = low ? "red" : "green";
+  }
   return {
     id: b.run_id || `#${b.id}`,
     bookletId: b.id,
     status: b.status,
     errorMessage: b.error_message,
-    confidence: lowConfidence ? "red" : "green",
+    confidence,
     emplid: b.emplid || "",
     courseCode: b.course_code_scanned || "",
     pageCount: b.num_pages ?? "",
@@ -208,7 +214,18 @@ export default function ViewSessionPage() {
     {
       key: "confidence",
       header: "Confidence Flag",
-      render: (row) => <StatusDot status={row.confidence === "red" ? "red" : "green"} />,
+      render: (row) => (
+        <StatusDot
+          status={row.confidence}
+          title={
+            row.confidence === "gray"
+              ? "No confidence score until the run finishes processing"
+              : row.confidence === "red"
+                ? "Low OCR confidence or course-code mismatch — review this booklet"
+                : "OCR confidence OK"
+          }
+        />
+      ),
     },
   ];
 
