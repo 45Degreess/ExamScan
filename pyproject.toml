@@ -3,9 +3,46 @@ name = "examscan"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
-    "picamera2>=0.3.36",
-    "rpi-lgpio>=0.6",
-    "rpimotorlib>=4.0.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "python-multipart>=0.0.20",
+    "opencv-python>=4.10",
+    "numpy>=1.26",
+    "imutils>=0.5.4",
+    "transformers>=4.46,<5",
+    "torch>=2.5",
+    "pillow>=10.4",
+    "sentencepiece>=0.2.2",
+    "easyocr>=1.7.2",
+    "pytesseract>=0.3.13",
+    "httpx>=0.27",
+    "sqlalchemy>=2.0",
+    "pymysql>=1.1",
+    "python-dotenv>=1.0",
 ]
+
+[project.optional-dependencies]
+pi = [
+    "picamera2>=0.3.36; sys_platform == 'linux'",
+    "rpi-lgpio>=0.6; sys_platform == 'linux'",
+    "rpimotorlib>=4.0.0; sys_platform == 'linux'",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "tomli-w>=1.0",
+]
+
+[tool.pytest.ini_options]
+# software/tests exercises the FastAPI OCR/session app and runs anywhere.
+# The root-level tests/ target the Pi hardware server and need the `pi` extra
+# (picamera2 etc.), so they are only collected explicitly.
+testpaths = ["software/tests"]
+
+[[tool.uv.dependency-metadata]]
+name = "python-prctl"
+version = "1.8.1"
+requires-dist = []

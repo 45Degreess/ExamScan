@@ -1,0 +1,103 @@
+[server]
+host = "0.0.0.0"
+port = 8000
+cors_enabled = true
+cors_allowed_origins = ["*"]
+
+[paths]
+runs_dir = "runs"
+
+[camera]
+lens_position = 0.94
+preview_width = 1920
+preview_height = 1080
+capture_width = 4608
+capture_height = 2592
+frame_rate = 30
+buffer_count = 6
+recording_start_delay = 3.0
+capture_stop_delay = 0.2
+capture_settle_delay = 0.5
+capture_restart_delay = 0.2
+
+[motor]
+step_pin = 21
+dir_pin = 20
+enable_pin = 16
+steps_per_rev = 200
+step_delay = 0.005
+fast_delay = 0.001
+default_turn_seconds = 3.0
+default_degrees = 190.0
+default_clockwise = false
+
+[dc_motor]
+in1_pin = 23
+in2_pin = 24
+enable_pin = 25
+pwm_freq = 100
+default_speed = 50
+default_turn_seconds = 0.3
+default_forward = false
+brake_after_turn = false
+
+[servos.page_drop]
+pin = 12
+min_angle = 0
+max_angle = 180
+min_pulse_width = 0.0005
+max_pulse_width = 0.0025
+frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
+down_angle = 95
+up_angle = 0
+default_settle_time = 0.4
+detach_after_move = true
+pin_factory = "pigpio"
+
+[servos.page_clamp_right]
+pin = 18
+min_angle = 0
+max_angle = 180
+min_pulse_width = 0.0005
+max_pulse_width = 0.0025
+frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
+down_angle = 90
+up_angle = 0
+default_settle_time = 0.4
+detach_after_move = true
+pin_factory = "pigpio"
+
+[servos.page_clamp_left]
+pin = 19
+min_angle = 0
+max_angle = 180
+min_pulse_width = 0.0005
+max_pulse_width = 0.0025
+frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
+down_angle = 73
+up_angle = 0
+default_settle_time = 0.4
+detach_after_move = true
+pin_factory = "pigpio"
+
+[workflow]
+servo_down_pause = 1.0
+wheel_pause = 1.0
+stepper_pause = 1.0
+servo_up_pause = 1.0
+default_pages = 7

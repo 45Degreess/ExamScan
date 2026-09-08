@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExamScan Demo</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #111;
+            color: #eee;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            gap: 16px;
+            padding: 16px;
+            font-family: system-ui, sans-serif;
+        }
+        #viewer { position: relative; width: min(100%, 1200px); }
+        img {
+            width: 100%;
+            max-height: calc(100vh - 190px);
+            display: block;
+            border: 2px solid #333;
+            background: #000;
+            object-fit: contain;
+        }
+        #flash {
+            position: absolute;
+            inset: 0;
+            background: white;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.05s ease-in;
+        }
+        #flash.go { opacity: 1; }
+        #controls {
+            width: min(100%, 1200px);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+        }
+        button, a.button {
+            min-height: 44px;
+            padding: 10px 20px;
+            font-size: 16px;
+            background: #e63946;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        button.secondary, a.secondary { background: #2a9d8f; }
+        button:hover:not(:disabled), a.button:hover { filter: brightness(0.9); }
+        button:disabled { background: #555; cursor: default; }
+        #meta { margin-left: auto; text-align: right; }
+        #status { color: #ccc; font-size: 14px; min-width: 240px; }
+        #status.error { color: #ff8fa3; }
+        #status.busy { color: #ffd166; }
+        #counter { color: #4cc9f0; font-size: 14px; font-weight: bold; }
+        #archiveLink[hidden] { display: none; }
+    </style>
+</head>
+<body>
+    <div id="viewer">
+        <img id="feed" alt="Camera feed" />
+        <div id="flash"></div>
+    </div>
+    <div id="controls">
+        <button id="scanBtn" onclick="scanStep()">Scan Page</button>
+        <button id="autoBtn" class="secondary" onclick="autoScan()">Auto Scan</button>
+        <button id="completeBtn" class="secondary" onclick="completeRun()">Finish Run</button>
+        <a id="archiveLink" class="button secondary" hidden>Download Images (ZIP)</a>
+        <div id="meta">
+            <div id="status">Ready</div>
+            <div id="counter">No run started</div>
+        </div>
+    </div>
+    <script>
+        let runId = null;
+        let busy = false;
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") scanStep();
+        });
+
+        // The stream connection dies on every capture: the server drops it while
+        // reconfiguring the sensor from preview to stills. Any client of this API
+        // has to re-point the img at /stream afterwards.
+        function startStream() {
+            const img = document.getElementById("feed");
+            img.src = "/stream?" + Date.now();
+            img.onerror = () => {
+                if (!busy) setTimeout(startStream, 1000);
+            };
+        }
+
+        function setStatus(text, kind) {
+            const el = document.getElementById("status");
+            el.textContent = text;
+            el.className = kind || "";
+        }
+
+        function setBusy(value, label) {
+            busy = value;
+            for (const id of ["scanBtn", "autoBtn", "completeBtn"]) {
+                document.getElementById(id).disabled = value;
+            }
+            if (label) setStatus(label);
+        }
+
+        function flash() {
+            const f = document.getElementById("flash");
+            f.classList.add("go");
+            setTimeout(() => {
+                f.style.transition = "opacity 0.4s ease-out";
+                f.classList.remove("go");
+                setTimeout(() => { f.style.transition = "opacity 0.05s ease-in"; }, 400);
+            }, 80);
+        }
+
+        function showArchive(url) {
+            const link = document.getElementById("archiveLink");
+            if (!url) return;
+            link.href = url;
+            link.hidden = false;
+        }
+
+        function updateCount(count) {
+            document.getElementById("counter").textContent =
+                count + " page" + (count === 1 ? "" : "s") + " in current run";
+        }
+
+        async function request(path, options) {
+            const response = await fetch(path, options);
+            const data = await response.json();
+            if (response.status === 409) {
+                const error = new Error(data.error || "Hardware busy");
+                error.busy = true;
+                throw error;
+            }
+            if (!response.ok) throw new Error(data.error || "Request failed");
+            return data;
+        }
+
+        async function ensureRun() {
+            if (runId) return runId;
+            const data = await request("/api/runs", { method: "POST" });
+            runId = data.run_id;
+            document.getElementById("archiveLink").hidden = true;
+            updateCount(0);
+            return runId;
+        }
+
+        async function runAction(label, makeRequest) {
+            if (busy) return;
+            setBusy(true, label);
+            flash();
+            document.getElementById("feed").src = "";
+            try {
+                const id = await ensureRun();
+                const data = await makeRequest(id);
+                updateCount(data.page_count);
+                showArchive(data.archive_url);
+                setStatus("Saved " + data.page_count + " page" + (data.page_count === 1 ? "" : "s"));
+                if (data.status === "complete") runId = null;
+            } catch (error) {
+                setStatus(error.message, error.busy ? "busy" : "error");
+            } finally {
+                setBusy(false);
+                setTimeout(startStream, 1000);
+            }
+        }
+
+        function scanStep() {
+            return runAction("Scanning page...", (id) =>
+                request(`/api/runs/${id}/scan-step`, { method: "POST" }));
+        }
+
+        function autoScan() {
+            // No body, so the server uses workflow.default_pages from config.
+            return runAction("Auto scanning...", (id) =>
+                request(`/api/runs/${id}/auto-scan`, { method: "POST" }));
+        }
+
+        async function completeRun() {
+            if (busy || !runId) {
+                setStatus("No run in progress", "error");
+                return;
+            }
+            setBusy(true, "Finishing run...");
+            try {
+                const data = await request(`/api/runs/${runId}/complete`, { method: "POST" });
+                showArchive(data.archive_url);
+                setStatus("Run finished - " + data.page_count + " pages");
+                runId = null;
+            } catch (error) {
+                setStatus(error.message, error.busy ? "busy" : "error");
+            } finally {
+                setBusy(false);
+            }
+        }
+
+        window.onload = startStream;
+    </script>
+</body>
+</html>
