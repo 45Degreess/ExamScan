@@ -37,6 +37,13 @@ class DuplicateEmplidError(Exception):
     """Raised when (session_id, emplid) already exists."""
 
 
+class BookletNotFoundError(Exception):
+    """Raised when a booklet id doesn't exist."""
+
+
+_UNSET = object()  # "field not supplied" sentinel for partial updates
+
+
 def _add_col_if_missing(conn, table: str, column: str, ddl: str) -> None:
     """Idempotent `ALTER TABLE ... ADD COLUMN` for databases created by an
     earlier schema version — there's no migration tooling. `ddl` is the full
@@ -376,6 +383,101 @@ def mark_booklet_error(booklet_id: int, message: str) -> None:
         )
 
 
+def update_booklet_fields(
+    booklet_id: int,
+    *,
+    emplid=_UNSET,
+    course_code_scanned=_UNSET,
+    num_pages=_UNSET,
+) -> dict:
+    """
+    Operator edit of a booklet's OCR-derived metadata. Only the supplied
+    fields change. Changing `emplid` unlinks any previously matched roster
+    student and re-links against the new value (via _link_booklet_to_student);
+    changing `course_code_scanned` recomputes `course_code_verified` against
+    the session's declared course code.
+
+    Raises BookletNotFoundError for an unknown id, DuplicateEmplidError if the
+    new emplid collides with another booklet in the same session.
+
+    Returns {"booklet_id", "student_id", "course_code_verified", "emplid",
+             "course_code_scanned", "num_pages"} after the update.
+    """
+    with _engine.begin() as conn:
+        cur = conn.execute(
+            text("""
+                SELECT b.session_id, b.emplid, b.course_code_scanned, b.num_pages,
+                       b.student_id, s.course_code AS session_course
+                FROM booklets b
+                JOIN scan_sessions s ON s.id = b.session_id
+                WHERE b.id = :bid
+            """),
+            {"bid": booklet_id},
+        ).mappings().first()
+        if cur is None:
+            raise BookletNotFoundError(booklet_id)
+
+        session_id = cur["session_id"]
+        new_emplid = (cur["emplid"] if emplid is _UNSET else (emplid or "")).strip()
+        new_ccs = (
+            cur["course_code_scanned"]
+            if course_code_scanned is _UNSET
+            else (course_code_scanned or "")
+        )
+        new_ccs = (new_ccs or "").strip()
+        new_pages = cur["num_pages"] if num_pages is _UNSET else num_pages
+
+        emplid_changed = new_emplid.upper() != (cur["emplid"] or "").strip().upper()
+        verified = bool(new_ccs) and (
+            new_ccs.upper() == (cur["session_course"] or "").strip().upper()
+        )
+
+        if emplid_changed and cur["student_id"] is not None:
+            conn.execute(
+                text("""
+                    UPDATE session_students
+                    SET scanned = FALSE, booklet_id = NULL, scanned_at = NULL
+                    WHERE id = :sid AND booklet_id = :bid
+                """),
+                {"sid": cur["student_id"], "bid": booklet_id},
+            )
+
+        set_student_null = ", student_id = NULL" if emplid_changed else ""
+        try:
+            conn.execute(
+                text(f"""
+                    UPDATE booklets
+                    SET emplid = :emplid,
+                        course_code_scanned = :ccs,
+                        course_code_verified = :verified,
+                        num_pages = :pages{set_student_null}
+                    WHERE id = :bid
+                """),
+                {
+                    "emplid": new_emplid,
+                    "ccs": new_ccs,
+                    "verified": verified,
+                    "pages": new_pages,
+                    "bid": booklet_id,
+                },
+            )
+        except IntegrityError as exc:
+            raise DuplicateEmplidError(new_emplid) from exc
+
+        student_id = cur["student_id"]
+        if emplid_changed:
+            student_id = _link_booklet_to_student(conn, session_id, booklet_id, new_emplid)
+
+        return {
+            "booklet_id": booklet_id,
+            "student_id": student_id,
+            "course_code_verified": verified,
+            "emplid": new_emplid,
+            "course_code_scanned": new_ccs,
+            "num_pages": new_pages,
+        }
+
+
 def get_imported_run_ids(session_id: int) -> set[str]:
     """run_ids already collected for this session that should NOT be collected
     again — every 'complete' one, plus 'processing' ones still within the
@@ -657,6 +759,22 @@ def get_session_review(session_id: int) -> list[dict]:
 
     items.sort(key=lambda it: (_REVIEW_RANK.get(it["status"], 99), (it["name"] or "").lower()))
     return items
+
+
+def list_completed_booklet_pdfs(session_id: int) -> list[dict]:
+    """`{id, emplid, pdf_path}` for every finished booklet in a session —
+    feeds the bulk PDF download."""
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT id, emplid, pdf_path
+                FROM booklets
+                WHERE session_id = :sid AND status = 'complete'
+                ORDER BY created_at, id
+            """),
+            {"sid": session_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
 
 
 def get_booklet(session_id: int, booklet_id: int) -> dict | None:

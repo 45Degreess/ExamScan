@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import functools
 import io
 import json
 import logging
@@ -966,6 +967,92 @@ async def get_booklet_pdf(session_code: str, booklet_id: int):
     )
 
 
+@router.patch("/sessions/{session_code}/booklets/{booklet_id}")
+async def edit_booklet(
+    session_code: str,
+    booklet_id: int,
+    emplid: str | None = Form(default=None),
+    course_code_scanned: str | None = Form(default=None),
+    num_pages: int | None = Form(default=None),
+):
+    """
+    Operator edit of a booklet's OCR-derived fields. Only the supplied fields
+    change; changing `emplid` re-links the class-list roster, changing the
+    course code recomputes `course_code_verified`.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    booklet = await run_in_threadpool(db.get_booklet, session["id"], booklet_id)
+    if booklet is None:
+        raise HTTPException(status_code=404, detail="Unknown booklet for this session.")
+
+    kwargs = {}
+    if emplid is not None:
+        kwargs["emplid"] = emplid
+    if course_code_scanned is not None:
+        kwargs["course_code_scanned"] = course_code_scanned
+    if num_pages is not None:
+        kwargs["num_pages"] = num_pages
+    if not kwargs:
+        raise HTTPException(status_code=400, detail="No fields to update.")
+
+    try:
+        result = await run_in_threadpool(
+            functools.partial(db.update_booklet_fields, booklet_id, **kwargs)
+        )
+    except db.DuplicateEmplidError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Emplid '{emplid}' is already recorded for session '{session_code}'.",
+        )
+    except db.BookletNotFoundError:
+        raise HTTPException(status_code=404, detail="Unknown booklet.")
+
+    return JSONResponse({"session_code": session_code, **result})
+
+
+def _build_session_zip(booklets: list[dict]) -> tuple[int, bytes]:
+    """ZIP every existing booklet PDF, named `<emplid or id>.pdf` (emplid is
+    unique per session; the regex just tames OCR-mangled values). Returns
+    (files added, zip bytes)."""
+    zip_buf = io.BytesIO()
+    added = 0
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for b in booklets:
+            p = Path(b["pdf_path"])
+            if not p.is_file():
+                continue
+            stem = re.sub(r"[^\w.-]", "_", str(b["emplid"] or b["id"]))
+            zf.write(p, arcname=f"{stem}.pdf")
+            added += 1
+    return added, zip_buf.getvalue()
+
+
+@router.get("/sessions/{session_code}/archive")
+async def download_session_archive(session_code: str):
+    """Stream a ZIP of every completed booklet's combined PDF for the session."""
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    booklets = await run_in_threadpool(db.list_completed_booklet_pdfs, session["id"])
+    added, data = await run_in_threadpool(_build_session_zip, booklets)
+    if added == 0:
+        raise HTTPException(
+            status_code=404, detail="No completed booklet PDFs for this session."
+        )
+
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{session_code}_booklets.zip"'
+        },
+    )
+
+
 @router.post("/sessions/{session_code}/finalize")
 async def finalize_session(
     session_code: str,
@@ -1190,6 +1277,57 @@ async def collect_runs(session_code: str, background_tasks: BackgroundTasks):
         "queued": queued,
         "skipped_existing": len(completed) - len(new_runs),
         "pi_runs_seen": len(runs),
+    })
+
+
+@router.post("/sessions/{session_code}/capture-run")
+async def capture_run(
+    session_code: str,
+    background_tasks: BackgroundTasks,
+    pages: int | None = Form(default=None),
+):
+    """
+    Trigger a fresh scan on the Pi for this session: create a run, run the full
+    page feed (auto-scan, which also completes the run), then hand the archive
+    to the same background worker collect-runs uses. The request blocks for the
+    physical scan, then returns a placeholder booklet in 'processing' state; the
+    frontend polls GET /sessions/{code}/booklets to watch it finish.
+
+    `pages` (optional) overrides the Pi's configured default page count.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
+            created = await client.post(f"{RUNS_API_BASE_URL}/api/runs")
+            _expect_pi_ok(created, "create run")
+            run_id = created.json()["run_id"]
+
+            scan_body = {"pages": pages} if pages is not None else None
+            scanned = await client.post(
+                f"{RUNS_API_BASE_URL}/api/runs/{run_id}/auto-scan", json=scan_body
+            )
+            _expect_pi_ok(scanned, "auto-scan")
+            manifest = scanned.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach Pi hardware server: {e or type(e).__name__}",
+        )
+
+    booklet_id = await run_in_threadpool(
+        db.create_pending_booklet, session["id"], run_id
+    )
+    background_tasks.add_task(_process_collected_run, session, booklet_id, run_id)
+
+    return JSONResponse({
+        "session_code": session_code,
+        "run_id": run_id,
+        "booklet_id": booklet_id,
+        "page_count": manifest.get("page_count"),
+        "status": "processing",
     })
 
 

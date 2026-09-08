@@ -129,6 +129,31 @@ export function bookletPdfUrl(sessionCode, bookletId) {
   return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}/pdf`;
 }
 
+// GET /sessions/{code}/archive — real endpoint (software/routes.py). A ZIP of
+// every completed booklet's PDF for the session. Point window.open at it (a
+// browser download), not apiFetch. 404 when there are no completed booklets.
+export function sessionArchiveUrl(sessionCode) {
+  return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/archive`;
+}
+
+// PATCH /sessions/{code}/booklets/{id} — real endpoint (software/routes.py).
+// Operator edit of a booklet's OCR fields; only the passed keys change.
+// Changing emplid re-links the class-list roster; changing the course code
+// recomputes course_code_verified. Returns the updated
+// { emplid, course_code_scanned, num_pages, course_code_verified, student_id }.
+// Throws on 409 (emplid already used in this session) or 404.
+export async function updateBooklet(sessionCode, bookletId, { emplid, courseCodeScanned, numPages }) {
+  const fd = new FormData();
+  if (emplid != null) fd.append("emplid", emplid);
+  if (courseCodeScanned != null) fd.append("course_code_scanned", courseCodeScanned);
+  if (numPages != null && numPages !== "") fd.append("num_pages", String(numPages));
+  const res = await apiFetch(
+    `/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}`,
+    { method: "PATCH", body: fd },
+  );
+  return res.json();
+}
+
 // GET /pi/stream — real endpoint (software/routes.py). Server-side passthrough
 // of the Pi hardware server's MJPEG feed. Point an <img> at this (not via
 // apiFetch); the browser renders multipart/x-mixed-replace natively.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { palette, space, font } from "../theme.js";
 import Card from "../components/Card.jsx";
@@ -6,6 +6,7 @@ import Button from "../components/Button.jsx";
 import DataTable from "../components/DataTable.jsx";
 import StatusDot from "../components/StatusDot.jsx";
 import { TextInput } from "../components/FormField.jsx";
+import BookletEditForm from "../components/BookletEditForm.jsx";
 import { useSession } from "../context/SessionContext.jsx";
 import { getSessionReview, finalizeSession, bookletPdfUrl } from "../api/sessions.js";
 
@@ -17,8 +18,9 @@ import { getSessionReview, finalizeSession, bookletPdfUrl } from "../api/session
 // roster rows left deselected become expected=0 — and marks the session
 // finalized, in one request. Finalize is advisory only; the page stays usable.
 //
-// NOTE: deselecting a stray booklet row (status "unexpected", no `username`)
-// has no persisted effect yet — a future "Edit" flow will re-identify those.
+// A stray scanned booklet (status "unexpected", no `username`) is resolved by
+// Edit → correct its emplid → it re-links to the roster student. The
+// Selected/Deselected toggle is hidden for those rows (it never persisted).
 
 const STATUS_DOT = {
   unexpected: "red",
@@ -56,6 +58,31 @@ export default function ReviewSessionPage() {
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [confirmArmed, setConfirmArmed] = useState(false);
+  const [editRow, setEditRow] = useState(null);
+
+  // Fetch (or re-fetch) the review feed for a session code. Re-run after a
+  // booklet edit so a re-linked stray booklet moves groups immediately.
+  const reloadReview = useCallback(async (sessionCode) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await getSessionReview(sessionCode);
+      const rows = (data.items || []).map((it) => ({ ...it, id: it.row_key }));
+      setItems(rows);
+      setSessionStatus(data.session_status || "open");
+      setSelected(
+        new Set(
+          rows
+            .filter((r) => r.status === "scanned" || r.status === "excluded")
+            .map((r) => r.id),
+        ),
+      );
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,26 +104,7 @@ export default function ReviewSessionPage() {
         setLoading(false);
         return;
       }
-
-      setLoading(true);
-      try {
-        const data = await getSessionReview(s.sessionCode);
-        if (cancelled) return;
-        const rows = (data.items || []).map((it) => ({ ...it, id: it.row_key }));
-        setItems(rows);
-        setSessionStatus(data.session_status || "open");
-        setSelected(
-          new Set(
-            rows
-              .filter((r) => r.status === "scanned" || r.status === "excluded")
-              .map((r) => r.id),
-          ),
-        );
-      } catch (e) {
-        if (!cancelled) setError(e.message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      reloadReview(s.sessionCode);
     })();
 
     return () => {
@@ -180,21 +188,27 @@ export default function ReviewSessionPage() {
     {
       key: "edit",
       header: "Edit",
-      render: () => (
-        <Button
-          variant="subtle"
-          style={{ padding: "4px 12px" }}
-          title="Not yet implemented"
-          onClick={() => {}}
-        >
-          Edit
-        </Button>
-      ),
+      render: (row) =>
+        row.booklet_id != null ? (
+          <Button
+            variant="subtle"
+            style={{ padding: "4px 12px" }}
+            onClick={() => setEditRow(row)}
+          >
+            Edit
+          </Button>
+        ) : (
+          <span style={{ color: palette.neutral }}>—</span>
+        ),
     },
     {
       key: "select",
       header: "",
       render: (row) => {
+        if (!row.username) {
+          // Stray scanned booklet — deselecting never persisted. Fix via Edit.
+          return <span style={{ color: palette.neutral }}>—</span>;
+        }
         const isSel = selected.has(row.id);
         return (
           <Button
@@ -312,6 +326,41 @@ export default function ReviewSessionPage() {
           </>
         )}
       </Card>
+
+      {editRow && (
+        <div
+          onClick={() => setEditRow(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: space.lg,
+            zIndex: 50,
+          }}
+        >
+          <div style={{ width: "100%", maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+            <Card>
+              <BookletEditForm
+                sessionCode={session.sessionCode}
+                booklet={{
+                  id: editRow.booklet_id,
+                  emplid: editRow.emplid,
+                  courseCodeScanned: editRow.course_code_scanned,
+                  numPages: editRow.num_pages,
+                }}
+                onSaved={() => {
+                  setEditRow(null);
+                  reloadReview(session.sessionCode);
+                }}
+                onCancel={() => setEditRow(null)}
+              />
+            </Card>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -6,10 +6,10 @@ import Button from "../components/Button.jsx";
 import StatusDot from "../components/StatusDot.jsx";
 import DataTable from "../components/DataTable.jsx";
 import CameraFeed from "../components/CameraFeed.jsx";
-import FormField, { TextInput } from "../components/FormField.jsx";
+import BookletEditForm from "../components/BookletEditForm.jsx";
 import { useSession } from "../context/SessionContext.jsx";
-import { collectRuns, listBooklets } from "../api/runs.js";
-import { bookletPdfUrl } from "../api/sessions.js";
+import { captureRun, collectRuns, listBooklets } from "../api/runs.js";
+import { bookletPdfUrl, sessionArchiveUrl } from "../api/sessions.js";
 
 const POLL_MS = 4000;
 
@@ -37,9 +37,9 @@ export default function ViewSessionPage() {
   const navigate = useNavigate();
   const { currentSession, loadSession } = useSession();
   const [runs, setRuns] = useState([]);
-  const [editingRunId, setEditingRunId] = useState(null);
-  const [editForm, setEditForm] = useState(null);
+  const [editBooklet, setEditBooklet] = useState(null);
   const [collecting, setCollecting] = useState(false);
+  const [capturing, setCapturing] = useState(false);
   const [notice, setNotice] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const sessionCodeRef = useRef(null);
@@ -116,36 +116,43 @@ export default function ViewSessionPage() {
     }
   };
 
-  // MOCK: "New Single Run" should trigger the Pi's real capture workflow
-  // (server.py POST /api/runs + /capture + /complete) for one run. See
-  // docs/final-ui-api-requirements.md ("View Session page — New Single Run").
-  const handleNewRun = () => {
-    setNotice("New Single Run isn't wired to the Pi yet — see docs/final-ui-api-requirements.md.");
+  // Trigger a fresh Pi scan for this session (create run + auto-scan). The
+  // request blocks for the physical scan; the poll then shows the new row go
+  // processing -> complete.
+  const handleNewRun = async () => {
+    const sessionCode = sessionCodeRef.current;
+    if (!sessionCode || capturing || collecting) return;
+    setCapturing(true);
+    setNotice(null);
+    try {
+      const res = await captureRun(sessionCode);
+      setNotice(`Captured run ${res.run_id} — processing…`);
+      refreshRuns();
+    } catch (e) {
+      setNotice(e.message);
+    } finally {
+      setCapturing(false);
+    }
   };
 
-  // MOCK: no bulk-download endpoint exists yet. See docs
-  // ("View Session page — Download All PDFs").
+  // Download a ZIP of every completed booklet's PDF for this session.
   const handleDownloadAll = () => {
-    alert("Not yet implemented — the backend has no endpoint to download completed PDFs. See docs/final-ui-api-requirements.md.");
+    const sessionCode = sessionCodeRef.current;
+    if (!sessionCode) return;
+    if (!runs.some((r) => r.status === "complete")) {
+      setNotice("No completed booklets to download yet.");
+      return;
+    }
+    window.open(sessionArchiveUrl(sessionCode), "_blank", "noopener");
   };
 
-  const openEdit = (run) => {
-    setEditingRunId(run.id);
-    setEditForm({ emplid: run.emplid || "", courseCode: run.courseCode || "", pageCount: run.pageCount || "" });
-  };
-
-  const cancelEdit = () => {
-    setEditingRunId(null);
-    setEditForm(null);
-  };
-
-  // MOCK: booklet metadata editing has no backend path yet — needs
-  // PATCH /sessions/{code}/booklets/{id} (db.py has no update for operator
-  // edits). See docs ("View Session page — Edit Run"). For now the form just
-  // closes with a notice; nothing is persisted.
-  const saveEdit = () => {
-    setNotice("Booklet metadata editing isn't wired to the backend yet — nothing was saved.");
-    cancelEdit();
+  const openEdit = (row) => {
+    setEditBooklet({
+      id: row.bookletId,
+      emplid: row.emplid,
+      courseCodeScanned: row.courseCode,
+      numPages: row.pageCount === "" ? null : row.pageCount,
+    });
   };
 
   if (!currentSession) return null;
@@ -189,11 +196,14 @@ export default function ViewSessionPage() {
     {
       key: "edit",
       header: "Edit Run",
-      render: (row) => (
-        <Button variant="subtle" style={{ padding: "4px 10px" }} onClick={() => openEdit(row)}>
-          Edit
-        </Button>
-      ),
+      render: (row) =>
+        row.status === "complete" ? (
+          <Button variant="subtle" style={{ padding: "4px 10px" }} onClick={() => openEdit(row)}>
+            Edit
+          </Button>
+        ) : (
+          <span style={{ color: palette.neutral }}>—</span>
+        ),
     },
     {
       key: "confidence",
@@ -228,31 +238,27 @@ export default function ViewSessionPage() {
             <CameraFeed />
           </Card>
 
-          {/* Bottom-left: buttons, toggling to the edit-run form */}
+          {/* Bottom-left: buttons, toggling to the booklet-edit form */}
           <Card style={{ flex: 1, minHeight: 180 }}>
-            {editingRunId ? (
-              <div>
-                <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 600 }}>Edit Run {editingRunId}</h3>
-                <FormField label="Emplid">
-                  <TextInput value={editForm.emplid} onChange={(e) => setEditForm({ ...editForm, emplid: e.target.value })} />
-                </FormField>
-                <FormField label="Course Code">
-                  <TextInput value={editForm.courseCode} onChange={(e) => setEditForm({ ...editForm, courseCode: e.target.value })} />
-                </FormField>
-                <FormField label="Page Count">
-                  <TextInput value={editForm.pageCount} onChange={(e) => setEditForm({ ...editForm, pageCount: e.target.value })} />
-                </FormField>
-                <div style={{ display: "flex", gap: space.sm, justifyContent: "flex-end" }}>
-                  <Button variant="subtle" onClick={cancelEdit}>Cancel</Button>
-                  <Button variant="primary" onClick={saveEdit}>Save</Button>
-                </div>
-              </div>
+            {editBooklet ? (
+              <BookletEditForm
+                sessionCode={sessionCodeRef.current}
+                booklet={editBooklet}
+                onSaved={() => {
+                  setEditBooklet(null);
+                  setNotice("Booklet updated.");
+                  refreshRuns();
+                }}
+                onCancel={() => setEditBooklet(null)}
+              />
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
-                <Button onClick={handleCollectRuns} disabled={collecting}>
+                <Button onClick={handleCollectRuns} disabled={collecting || capturing}>
                   {collecting ? "Collecting…" : "Collect New Runs"}
                 </Button>
-                <Button onClick={handleNewRun}>New Single Run</Button>
+                <Button onClick={handleNewRun} disabled={collecting || capturing}>
+                  {capturing ? "Scanning…" : "New Single Run"}
+                </Button>
                 <Button onClick={handleDownloadAll}>Download All PDFs</Button>
                 {notice && (
                   <div style={{ fontSize: 12, color: palette.textMuted, marginTop: space.xs }}>{notice}</div>
