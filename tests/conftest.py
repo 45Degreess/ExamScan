@@ -116,6 +116,9 @@ class ApiClient:
     def put(self, path, body=None):
         return self.request("PUT", path, body)
 
+    def delete(self, path):
+        return self.request("DELETE", path)
+
 
 @pytest.fixture()
 def api_server(config_manager, config, sample_image):

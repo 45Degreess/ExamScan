@@ -114,6 +114,20 @@ class ExamScanHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_error(500, str(exc))
 
+    def do_DELETE(self):
+        try:
+            if urlparse(self.path).path != "/api/runs":
+                self._send_error(404, "not found")
+                return
+            response = self.server.delete_runs_locked()
+            self._send_json(200, {"ok": True, **response})
+        except BusyError as exc:
+            self._send_error(409, str(exc))
+        except (RunError, ValueError) as exc:
+            self._send_error(400, str(exc))
+        except Exception as exc:
+            self._send_error(500, str(exc))
+
     def _handle_create_run(self):
         manifest = self.server.run_manager.create_run()
         self._send_json(201, self._run_response(manifest))
@@ -205,7 +219,7 @@ class ExamScanHandler(BaseHTTPRequestHandler):
         elif origin in allowed:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _read_body(self):
@@ -380,6 +394,9 @@ class ExamScanServer(ThreadingHTTPServer):
 
     def complete_run_locked(self, run_id):
         return self.run_locked("complete", self.run_manager.complete_run, run_id)
+
+    def delete_runs_locked(self):
+        return self.run_locked("delete-runs", self.run_manager.delete_all_runs)
 
     def _record_failure(self, run_id, operation, exc):
         try:

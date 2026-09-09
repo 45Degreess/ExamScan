@@ -174,6 +174,66 @@ def test_list_runs_summarises_newest_first(api_client):
     assert runs[0]["status"] == "open"
 
 
+def test_delete_all_runs_removes_run_dirs_and_preserves_root(api_server, api_client):
+    first = api_client.post("/api/runs").json["run_id"]
+    second = api_client.post("/api/runs").json["run_id"]
+    root = api_server.run_manager.root
+
+    response = api_client.delete("/api/runs")
+
+    assert response.status == 200
+    assert response.json["ok"] is True
+    assert response.json["deleted"] == 2
+    assert set(response.json["run_ids"]) == {first, second}
+    assert api_client.get("/api/runs").json == {"runs": []}
+    assert root.exists()
+    assert not (root / first).exists()
+    assert not (root / second).exists()
+    assert api_server.run_manager.active_run_id is None
+
+
+def test_delete_all_runs_is_rejected_while_busy(api_server, api_client):
+    run_id = api_client.post("/api/runs").json["run_id"]
+    assert api_server.operation_lock.acquire(blocking=False)
+    api_server.operation_name = "capture"
+    try:
+        response = api_client.delete("/api/runs")
+    finally:
+        api_server.operation_name = None
+        api_server.operation_lock.release()
+
+    assert response.status == 409
+    assert response.json["error"] == "hardware is busy with capture"
+    assert api_client.get("/api/runs").json["runs"][0]["run_id"] == run_id
+
+
+def test_delete_all_runs_leaves_non_run_files_and_folders(api_server, api_client):
+    run_id = api_client.post("/api/runs").json["run_id"]
+    root = api_server.run_manager.root
+    note = root / "note.txt"
+    folder = root / "not-a-run"
+    nested = folder / "readme.txt"
+    note.write_text("keep", encoding="utf-8")
+    folder.mkdir()
+    nested.write_text("keep", encoding="utf-8")
+
+    response = api_client.delete("/api/runs")
+
+    assert response.status == 200
+    assert response.json["deleted"] == 1
+    assert response.json["run_ids"] == [run_id]
+    assert not (root / run_id).exists()
+    assert note.read_text(encoding="utf-8") == "keep"
+    assert nested.read_text(encoding="utf-8") == "keep"
+
+
+def test_delete_unknown_path_returns_not_found(api_client):
+    response = api_client.delete("/api/runs/not-a-real-delete")
+
+    assert response.status == 404
+    assert response.json["error"] == "not found"
+
+
 def test_get_run_includes_page_count_like_post_does(api_client):
     run_id = api_client.post("/api/runs").json["run_id"]
     captured = api_client.post(f"/api/runs/{run_id}/capture")

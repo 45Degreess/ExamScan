@@ -505,6 +505,7 @@ servos are reachable only through the run actions below.
 | PUT | `/api/config` | Validate and apply a config; backs up the previous one |
 | POST | `/api/runs` | Create a run. No body |
 | GET | `/api/runs` | List all runs, newest first — `{"runs": [...]}` |
+| DELETE | `/api/runs` | Delete all stored run folders. Refuses while hardware is busy |
 | GET | `/api/runs/{id}` | Run manifest |
 | POST | `/api/runs/{id}/capture` | Capture one page |
 | POST | `/api/runs/{id}/page-turn` | The sixteen-phase clamp, arm, fan and stepper sequence |
@@ -519,6 +520,15 @@ with another operation, `500` unexpected failure.
 Runs are stored as `runs/<run_id>/pages/page_NNN.jpg` alongside a `manifest.json`. The archive is
 available as soon as a run has at least one page — you do not have to complete it first — and
 unpacks to a folder named after the run.
+
+`DELETE /api/runs` removes every valid run directory from the configured runs folder and leaves the
+runs folder itself in place. It only deletes directories that contain a `manifest.json`, so stray
+notes or unrelated folders under `runs/` are preserved. The endpoint uses the same hardware lock as
+capture, page-turn and auto-scan; if the scanner is already busy, it returns `409` and deletes
+nothing.
+
+Successful deletion returns `{"ok": true, "deleted": N, "run_ids": [...]}`. The `run_ids` array
+lists the runs that were removed.
 
 ### Run responses
 
@@ -602,6 +612,12 @@ curl -s localhost:8000/api/runs/$RUN
 
 ```bash
 curl -s localhost:8000/api/runs
+```
+
+Delete all stored runs:
+
+```bash
+curl -s -X DELETE localhost:8000/api/runs
 ```
 
 ```bash
