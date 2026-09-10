@@ -15,6 +15,9 @@ capture_width = 4608
 capture_height = 2592
 frame_rate = 30
 buffer_count = 6
+lores_width = 960
+lores_height = 540
+exposure_mode = "short"
 recording_start_delay = 3.0
 capture_stop_delay = 0.2
 capture_settle_delay = 0.5
@@ -24,25 +27,43 @@ capture_restart_delay = 0.2
 step_pin = 21
 dir_pin = 20
 enable_pin = 16
-steps_per_rev = 200
-step_delay = 0.005
+# Step pulses per revolution, not full steps: 200 full steps x 8 microsteps.
+# The TMC2209 defaults to 1/8 microstepping with MS1/MS2 unconnected, where the
+# DRV8825 it replaced defaulted to full steps.
+steps_per_rev = 1600
+step_delay = 0.002
 fast_delay = 0.001
 default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = false
+invert_direction = false
+# Page-turn geometry: out page_turn_degrees, then shared_degrees alongside the
+# other motor, then home. The final return stops return_short_degrees short, so
+# set that to 0 for an exact round trip.
+page_turn_degrees = 90.0
+shared_degrees = 80.0
+return_short_degrees = 10.0
 
-[dc_motor]
-in1_pin = 23
-in2_pin = 24
+[motor2]
+step_pin = 24
+dir_pin = 23
 enable_pin = 25
-pwm_freq = 100
-default_speed = 50
-default_turn_seconds = 0.3
-default_forward = false
-brake_after_turn = false
+# DRV8825 with MS1/MS2/MS3 unconnected: full step, 200 pulses per revolution.
+# The TMC2209 on [motor] runs 1/8 microstepping, hence its 1600.
+steps_per_rev = 200
+step_delay = 0.004
+fast_delay = 0.001
+default_degrees = 190.0
+default_clockwise = false
+# This motor's coils are wired so DIR high is clockwise, the opposite of
+# [motor]. Inverting here means "clockwise" means clockwise for both.
+invert_direction = true
+page_turn_degrees = 90.0
+shared_degrees = 80.0
+return_short_degrees = 10.0
 
 [servos.page_drop]
-pin = 12
+pin = 22
 min_angle = 0
 max_angle = 180
 min_pulse_width = 0.0005
@@ -53,14 +74,19 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
+# Cut-off for an opt-in hold, so a servo cannot stay stalled indefinitely.
+max_hold_seconds = 10.0
 down_angle = 95
 up_angle = 0
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
-[servos.page_clamp_right]
-pin = 18
+[servos.page_clamp_small]
+pin = 27
 min_angle = 0
 max_angle = 180
 min_pulse_width = 0.0005
@@ -71,13 +97,23 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
+# Cut-off for an opt-in hold, so a servo cannot stay stalled indefinitely.
+max_hold_seconds = 10.0
 down_angle = 90
 up_angle = 0
+# Clamps seat at contact_angle then ease back to hold_angle and stay
+# powered there - holding hard against a stop stalls the servo.
+contact_angle = 88
+hold_angle = 85
+use_hold = true
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
-[servos.page_clamp_left]
+[servos.page_clamp_big]
 pin = 19
 min_angle = 0
 max_angle = 180
@@ -89,15 +125,65 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
+# Cut-off for an opt-in hold, so a servo cannot stay stalled indefinitely.
+max_hold_seconds = 10.0
 down_angle = 73
 up_angle = 0
+# Clamps seat at contact_angle then ease back to hold_angle and stay
+# powered there - holding hard against a stop stalls the servo.
+contact_angle = 105
+hold_angle = 102
+use_hold = true
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
+[fan]
+pin = 13
+frequency_hz = 25000
+min_start_duty_pct = 10
+tach_pin = 17
+tach_pulses_per_rev = 2
+# Duty held during the page turn, and how long to let the fan reach speed
+# before the arm drops onto the page.
+duty_pct = 100
+spinup_seconds = 3.0
+
+[obstruction]
+enabled = true
+mode = "full"
+model_path = "models/hand_detector.tflite"
+landmark_model_path = "models/hand_landmarks_detector.tflite"
+min_confidence = 0.3
+min_presence_confidence = 0.5
+min_candidate_presence_confidence = 0.01
+max_hands = 2
+inference_threads = 4
+poll_interval = 0.1
+target_interval = 0.1
+source_width = 960
+source_height = 540
+# Fail-safe default: use the whole image until a known-safe preview is used
+# to calibrate the scan-bed rectangle plus its five-percent margin.
+bed_roi = [0.0, 0.0, 1.0, 1.0]
+region_schedule = ["bed", "bed", "full"]
+debug_overlay = false
+clear_frames = 5
+stale_after_seconds = 3.0
+wait_timeout_seconds = 30.0
+
 [workflow]
+# Pauses between the page-turn phases: drop clamp, drop arm, stepper out
+# (first half), lift clamp, stepper out (second half), lift arm, return stepper.
+clamp_down_pause = 1.0
 servo_down_pause = 1.0
-wheel_pause = 1.0
+clamp_up_pause = 0.5
 stepper_pause = 1.0
 servo_up_pause = 1.0
+motor_pause = 1.0
+# Dwell on the small clamp's first drop, before the fan starts.
+small_clamp_hold_seconds = 5.0
 default_pages = 7

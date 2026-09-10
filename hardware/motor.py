@@ -1,111 +1,6 @@
 import time
 
-from gpiozero import Motor as GpioZeroMotor
-from gpiozero import PWMOutputDevice
 import RPi.GPIO as GPIO
-
-
-class DCMotor:
-    def __init__(
-        self,
-        in1_pin,
-        in2_pin,
-        enable_pin=None,
-        pwm_freq=100,
-        default_speed=100,
-        motor_class=GpioZeroMotor,
-        pwm_class=PWMOutputDevice,
-    ):
-        self._in1_pin = in1_pin
-        self._in2_pin = in2_pin
-        self._enable_pin = enable_pin
-        self._pwm_freq = pwm_freq
-        self._default_speed = self._clamp_speed(default_speed)
-        self._speed = 0
-        self._enable = None
-
-        if self._enable_pin is not None:
-            self._enable = pwm_class(self._enable_pin, frequency=self._pwm_freq)
-            self._motor = motor_class(
-                forward=self._in1_pin,
-                backward=self._in2_pin,
-                pwm=False,
-            )
-        else:
-            self._motor = motor_class(
-                forward=self._in1_pin,
-                backward=self._in2_pin,
-                pwm=True,
-            )
-
-        self.stop()
-
-    @classmethod
-    def from_config(cls, config):
-        return cls(
-            in1_pin=config["in1_pin"],
-            in2_pin=config["in2_pin"],
-            enable_pin=config["enable_pin"],
-            pwm_freq=config["pwm_freq"],
-            default_speed=config["default_speed"],
-        )
-
-    def set_speed(self, speed):
-        self._speed = self._clamp_speed(speed)
-        if self._enable is not None:
-            self._enable.value = self._speed_fraction
-        return self._speed
-
-    def forward(self, speed=None):
-        self.set_speed(self._default_speed if speed is None else speed)
-        self._motor.forward(self._run_speed)
-
-    def reverse(self, speed=None):
-        self.set_speed(self._default_speed if speed is None else speed)
-        self._motor.backward(self._run_speed)
-
-    def stop(self):
-        self._motor.stop()
-        self.set_speed(0)
-
-    def brake(self):
-        self.set_speed(0)
-        self._motor.forward_device.on()
-        self._motor.backward_device.on()
-
-    def run_for(self, seconds, speed=None, forward=True, brake=False):
-        if seconds < 0:
-            raise ValueError("seconds must be at least 0")
-
-        if forward:
-            self.forward(speed)
-        else:
-            self.reverse(speed)
-
-        time.sleep(seconds)
-        if brake:
-            self.brake()
-        else:
-            self.stop()
-
-    def cleanup(self):
-        self.stop()
-        self._motor.close()
-        if self._enable is not None:
-            self._enable.close()
-
-    def _clamp_speed(self, speed):
-        return max(0, min(100, float(speed)))
-
-    @property
-    def _speed_fraction(self):
-        return self._speed / 100
-
-    @property
-    def _run_speed(self):
-        if self._enable is not None:
-            return 1
-        return self._speed_fraction
 
 
 class StepperMotor:
@@ -117,6 +12,7 @@ class StepperMotor:
         steps_per_rev,
         step_delay,
         fast_delay,
+        invert_direction=False,
     ):
         self._step_pin = step_pin
         self._dir_pin = dir_pin
@@ -124,6 +20,10 @@ class StepperMotor:
         self._steps_per_rev = steps_per_rev
         self._step_delay = step_delay
         self._fast_delay = fast_delay
+        # Which DIR level means clockwise depends on how the coils are wired,
+        # so it differs per motor. Inverting here keeps "clockwise" honest for
+        # callers instead of making them pass the opposite of what they mean.
+        self._invert_direction = invert_direction
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setup([step_pin, dir_pin, enable_pin], GPIO.OUT)
@@ -138,27 +38,63 @@ class StepperMotor:
             steps_per_rev=config["steps_per_rev"],
             step_delay=config["step_delay"],
             fast_delay=config["fast_delay"],
+            invert_direction=config["invert_direction"],
         )
 
+    @property
+    def steps_per_rev(self):
+        return self._steps_per_rev
+
     def enable(self):
-        GPIO.output(self._enable_pin, GPIO.LOW)  
+        GPIO.output(self._enable_pin, GPIO.LOW)
 
     def disable(self):
         GPIO.output(self._enable_pin, GPIO.HIGH)
 
-    def move_steps(self, steps, clockwise=True):
-        GPIO.output(self._dir_pin, GPIO.LOW if clockwise else GPIO.HIGH)
-        self.enable()
-        for _ in range(steps):
-            GPIO.output(self._step_pin, GPIO.HIGH)
-            time.sleep(self._step_delay)
-            GPIO.output(self._step_pin, GPIO.LOW)
-            time.sleep(self._step_delay)
-        self.disable()
+    def move_steps(
+        self,
+        steps,
+        clockwise=True,
+        step_delay=None,
+        keep_enabled=False,
+        abort_check=None,
+    ):
+        """Pulse out `steps`, returning how many were actually done.
 
-    def move_degrees(self, degrees, clockwise=True):
+        keep_enabled leaves the coils powered so the motor holds position
+        against a load. Re-enabling after the fact would leave a window where
+        the shaft is free to slip, which is the whole thing being avoided.
+
+        abort_check is polled once per step; returning True stops the move
+        where it stands. The count comes back so the caller can pick up the
+        remainder later - re-issuing the whole move instead would turn the
+        wheel by however far it already got, twice.
+        """
+        delay = self._step_delay if step_delay is None else step_delay
+        turn_cw = clockwise != self._invert_direction
+        GPIO.output(self._dir_pin, GPIO.LOW if turn_cw else GPIO.HIGH)
+        self.enable()
+        done = 0
+        for _ in range(steps):
+            if abort_check is not None and abort_check():
+                break
+            GPIO.output(self._step_pin, GPIO.HIGH)
+            time.sleep(delay)
+            GPIO.output(self._step_pin, GPIO.LOW)
+            time.sleep(delay)
+            done += 1
+        # An interrupted move keeps the coils live whatever was asked: the
+        # caller means to resume, and letting go now would drop the position
+        # that resuming depends on.
+        if not keep_enabled and done == steps:
+            self.disable()
+        return done
+
+    def move_degrees(self, degrees, clockwise=True, keep_enabled=False, abort_check=None):
         steps = round(self._steps_per_rev * degrees / 360)
-        self.move_steps(steps, clockwise)
+        return self.move_steps(
+            steps, clockwise, keep_enabled=keep_enabled, abort_check=abort_check
+        )
 
     def cleanup(self):
         self.disable()

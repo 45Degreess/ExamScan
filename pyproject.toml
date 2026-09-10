@@ -25,9 +25,36 @@ dependencies = [
 
 [project.optional-dependencies]
 pi = [
+    "gpiozero>=2.0.1; sys_platform == 'linux'",
+    "pigpio>=1.78; sys_platform == 'linux'",
     "picamera2>=0.3.36; sys_platform == 'linux'",
     "rpi-lgpio>=0.6; sys_platform == 'linux'",
     "rpimotorlib>=4.0.0; sys_platform == 'linux'",
+    "ai-edge-litert>=1.0.1; sys_platform == 'linux'",
+]
+
+[project.scripts]
+examscan = "main:main"
+examscan-dev = "devserver:main"
+examscan-demo = "demoserver:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "main.py",
+    "devserver.py",
+    "demoserver.py",
+    "demo.html",
+    "server.py",
+    "fakes.py",
+    "config.py",
+    "runs.py",
+    "hardware",
+    "models",
+    "software",
 ]
 
 [dependency-groups]
@@ -37,10 +64,10 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# software/tests exercises the FastAPI OCR/session app and runs anywhere.
-# The root-level tests/ target the Pi hardware server and need the `pi` extra
-# (picamera2 etc.), so they are only collected explicitly.
+# The partner FastAPI/OCR/session application runs on every development host.
+# Root tests target the Pi hardware server and are invoked explicitly on a Pi.
 testpaths = ["software/tests"]
+pythonpath = ["."]
 
 [[tool.uv.dependency-metadata]]
 name = "python-prctl"

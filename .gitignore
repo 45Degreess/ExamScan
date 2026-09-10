@@ -6,20 +6,28 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
+# Virtual environments and model caches
 .venv
 .model_cache/
-./__pycache__/
-*.pyc
 
 motor copy.py
 hardware/find_focus.py
 
-# Runtime output from /demo_exam_folder
-software/demo_output/
+# Agent worktrees and session state
+.claude/
 
-# Runtime output from POST /sessions/{session_code}/booklets
+# Scanner runtime output and calibration scratch
+runs/
+focus_tests/
+software/demo_output/
 software/storage/
 
 # Local MySQL credentials (copy from software/.env.example)
 software/.env
+
+# Local backups taken before editing
+*.bak
+
+# Generated knowledge graph and agent instructions
+graphify-out/
+CLAUDE.md

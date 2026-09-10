@@ -1,17 +1,19 @@
 """The ExamScan web layer: HTTP routing, run workflow, and the server loop.
 
-Hardware-agnostic. Entry points build the camera, wheel motor and servos, then
-hand them to `serve()` — `main.py` with real hardware, `devserver.py` with fakes.
+Hardware-agnostic. Entry points build the camera, servos and stepper, then hand
+them to `serve()` — `main.py` with real hardware, `devserver.py` with fakes.
 """
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from config import CONFIG_PATH, ConfigError, ConfigManager
+from hardware.vision import ObstructionError
 from runs import RunError, RunManager, decorate_manifest, resolve_project_path
 
 
@@ -105,9 +107,23 @@ class ExamScanHandler(BaseHTTPRequestHandler):
                 self._handle_complete(run_id)
             else:
                 self._send_error(404, "not found")
-        except BusyError as exc:
+        except (BusyError, ObstructionError) as exc:
             self._send_error(409, str(exc))
         except (ConfigError, RunError, ValueError) as exc:
+            self._send_error(400, str(exc))
+        except Exception as exc:
+            self._send_error(500, str(exc))
+
+    def do_DELETE(self):
+        try:
+            if urlparse(self.path).path != "/api/runs":
+                self._send_error(404, "not found")
+                return
+            response = self.server.delete_runs_locked()
+            self._send_json(200, {"ok": True, **response})
+        except BusyError as exc:
+            self._send_error(409, str(exc))
+        except (RunError, ValueError) as exc:
             self._send_error(400, str(exc))
         except Exception as exc:
             self._send_error(500, str(exc))
@@ -203,7 +219,7 @@ class ExamScanHandler(BaseHTTPRequestHandler):
         elif origin in allowed:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _read_body(self):
@@ -234,24 +250,34 @@ class ExamScanServer(ThreadingHTTPServer):
         config_manager,
         config,
         camera,
-        wheel_motor,
         servos,
         stepper,
+        stepper2,
+        fan,
+        obstruction=None,
         handler=ExamScanHandler,
     ):
         super().__init__(address, handler)
         self.config_manager = config_manager
         self.config = config
         self.camera = camera
-        self.wheel_motor = wheel_motor
         self.servos = servos
         self.stepper = stepper
+        self.stepper2 = stepper2
+        self.fan = fan
+        self.obstruction = obstruction
+        # Sequence state, so /health can report a pause before any turn has run.
+        self._phases = []
+        self._held = {}
+        self._fan_duty = 0
+        self._paused_phase = None
         self.run_manager = RunManager(config)
         self.operation_lock = threading.Lock()
         self.operation_name = None
         self.config_restart_required = False
 
     def health(self):
+        hand_detection = self._hand_detection()
         return {
             "ok": True,
             "active_run_id": self.run_manager.active_run_id,
@@ -259,6 +285,89 @@ class ExamScanServer(ThreadingHTTPServer):
             "operation": self.operation_name,
             "streaming": self.camera.streaming,
             "config_restart_required": self.config_restart_required,
+            "hand_present": hand_detection.get("hand_present"),
+            "hand_detection": hand_detection,
+            "paused": self._paused_phase is not None,
+            "paused_phase": self._paused_phase,
+        }
+
+    def _hand_present(self):
+        return self._hand_detection().get("hand_present")
+
+    def _hand_detection(self):
+        if self.obstruction is None:
+            return {
+                "mode": "disabled",
+                "state": "disabled",
+                "hand_present": None,
+                "safe_to_move": True,
+                "reason": None,
+                "clear_count": None,
+                "clear_frames": None,
+                "palm_score": None,
+                "presence_score": None,
+                "confirmed_hands": 0,
+                "inference_ms": None,
+                "source_width": None,
+                "source_height": None,
+                "region": None,
+                "bed_roi": None,
+                "effective_fps": None,
+                "exposure_time_us": None,
+                "analogue_gain": None,
+                "debug_overlay": False,
+                "checked_at_age_seconds": None,
+                "error": None,
+            }
+        status = getattr(self.obstruction, "status", None)
+        if isinstance(status, dict):
+            keys = (
+                "mode",
+                "state",
+                "hand_present",
+                "safe_to_move",
+                "reason",
+                "clear_count",
+                "clear_frames",
+                "palm_score",
+                "presence_score",
+                "confirmed_hands",
+                "inference_ms",
+                "source_width",
+                "source_height",
+                "region",
+                "bed_roi",
+                "effective_fps",
+                "exposure_time_us",
+                "analogue_gain",
+                "debug_overlay",
+                "checked_at_age_seconds",
+                "error",
+            )
+            return {key: status.get(key) for key in keys}
+        present = not self.obstruction.is_clear()
+        return {
+            "mode": "legacy",
+            "state": "candidate" if present else "clear",
+            "hand_present": present,
+            "safe_to_move": not present,
+            "reason": "possible hand is in the scan area" if present else None,
+            "clear_count": None,
+            "clear_frames": None,
+            "palm_score": None,
+            "presence_score": None,
+            "confirmed_hands": 0,
+            "inference_ms": None,
+            "source_width": None,
+            "source_height": None,
+            "region": None,
+            "bed_roi": None,
+            "effective_fps": None,
+            "exposure_time_us": None,
+            "analogue_gain": None,
+            "debug_overlay": False,
+            "checked_at_age_seconds": None,
+            "error": None,
         }
 
     def run_locked(self, operation_name, callback, *args):
@@ -286,6 +395,9 @@ class ExamScanServer(ThreadingHTTPServer):
     def complete_run_locked(self, run_id):
         return self.run_locked("complete", self.run_manager.complete_run, run_id)
 
+    def delete_runs_locked(self):
+        return self.run_locked("delete-runs", self.run_manager.delete_all_runs)
+
     def _record_failure(self, run_id, operation, exc):
         try:
             self.run_manager.add_error(run_id, operation, str(exc))
@@ -295,6 +407,11 @@ class ExamScanServer(ThreadingHTTPServer):
     def capture_page(self, run_id):
         image_path = self.run_manager.next_capture_path(run_id)
         try:
+            # Detection runs continuously, including while no run is active.
+            # Waiting here keeps a hand out of the captured page and gives
+            # direct API clients the same fail-closed behaviour as the UI.
+            if self.obstruction is not None:
+                self.obstruction.wait_until_clear()
             self.camera.capture_file(image_path)
         except Exception as exc:
             self._record_failure(run_id, "capture", exc)
@@ -308,48 +425,299 @@ class ExamScanServer(ThreadingHTTPServer):
             self._record_failure(run_id, "page-turn", exc)
             raise
 
-    def page_turn(self):
-        """Drop the arm, spin the wheel, turn the stepper, lift, return the stepper.
+    # ---- resumable phase building blocks -------------------------------
+    #
+    # Every sub-step takes an abort callable and returns True only if it
+    # finished. Anything that stops early leaves enough state behind to pick up
+    # the remainder later: re-running a whole move instead would repeat the part
+    # already done, which on a stepper means turning the wheel twice as far.
 
-        The stepper goes back the way it came once the arm is clear, so the
-        wheel ends every page turn where it started and cannot creep round.
+    def _paced(self, seconds):
+        """An interruptible settle, resuming with whatever time is left."""
+        left = {"t": seconds}
+
+        def run(abort):
+            end = time.monotonic() + left["t"]
+            while True:
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    left["t"] = 0
+                    return True
+                if abort():
+                    left["t"] = remaining
+                    return False
+                time.sleep(min(0.02, remaining))
+
+        return run
+
+    def _stepper_move(self, motor, steps, clockwise, keep_enabled=False):
+        left = {"n": steps}
+
+        def run(abort):
+            done = motor.move_steps(
+                left["n"],
+                clockwise=clockwise,
+                keep_enabled=keep_enabled,
+                abort_check=abort,
+            )
+            left["n"] -= done
+            return left["n"] == 0
+
+        return run
+
+    def _parallel_move(self, first, second):
+        """Both wheels at once, each tracking its own remainder.
+
+        An exception inside a Thread does not reach the joining thread, so a
+        motor that failed would be swallowed and the turn would report success
+        on a page that never moved. Results are captured and re-raised.
         """
-        servo_config = self.config["servos"]["page_drop"]
+        def run(abort):
+            done, errors = {}, []
+
+            def guard(name, move):
+                def body():
+                    try:
+                        done[name] = move(abort)
+                    except Exception as exc:
+                        errors.append(exc)
+
+                return body
+
+            threads = [
+                threading.Thread(target=guard("first", first)),
+                threading.Thread(target=guard("second", second)),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            if errors:
+                raise errors[0]
+            return all(done.values())
+
+        return run
+
+    def _servo_move(self, servo, angle, servo_config, hold=False):
+        def run(abort):
+            reached = servo.set_angle(
+                angle,
+                settle_time=servo_config["default_settle_time"],
+                hold=hold,
+                abort_check=abort,
+            )
+            if reached:
+                if hold:
+                    self._held[servo] = (angle, servo_config)
+                else:
+                    self._held.pop(servo, None)
+            return reached
+
+        return run
+
+    def _seat_and_hold(self, servo, servo_config):
+        """Seat a clamp at contact, then ease back and hold just off the stop.
+
+        Holding hard against a stop the servo cannot reach leaves it stalled -
+        it buzzes, warms up, and drags the supply down. Easing back to
+        hold_angle keeps the clamp's pressure at an angle it can actually hold.
+        """
+        seat = self._servo_move(servo, servo_config["contact_angle"], servo_config)
+        if not servo_config["use_hold"]:
+            def release(abort):
+                servo.detach()
+                return True
+
+            return [seat, release]
+        return [
+            seat,
+            self._servo_move(
+                servo, servo_config["hold_angle"], servo_config, hold=True
+            ),
+        ]
+
+    def _fan(self, percent):
+        def run(abort):
+            self.fan.set_duty(percent)
+            self._fan_duty = percent
+            return True
+
+        return run
+
+    @staticmethod
+    def _steps_for(motor_config, degrees):
+        return round(motor_config["steps_per_rev"] * degrees / 360)
+
+    def _reassert_holds(self):
+        """Re-command every held servo so its cut-off timer restarts.
+
+        max_hold_seconds exists so a servo cannot sit stalled forever, but a
+        pause of unknown length would trip it and let the clamps go limp -
+        dropping the page mid-turn, silently, because the timer detaches rather
+        than raising.
+        """
+        for servo, (angle, servo_config) in list(self._held.items()):
+            servo.set_angle(
+                angle,
+                settle_time=0,
+                hold=True,
+            )
+
+    def _pause_for_obstruction(self, number, label):
+        """Stop dead, wait for the area to clear, then restore and carry on.
+
+        Motion stops; static holds do not. A stationary energised stepper is not
+        a hazard and letting go of it would drop the wheel position the resume
+        depends on, so the steppers stay live. The fan does stop - spinning
+        blades are the actual danger, and it is the only thing that keeps moving
+        on its own once commanded.
+        """
+        self._paused_phase = f"{number}/{len(self._phases)} ({label})"
+        was_running = self._fan_duty
+        self._next_reassert = time.monotonic()
+        if was_running:
+            self.fan.set_duty(0)
+
+        print(f"!! HAND DETECTED - paused at phase {self._paused_phase}")
+        print("   waiting for the scan area to clear...", flush=True)
+        stopped_at = self._paused_phase
+        try:
+            self.obstruction.wait_until_clear(on_wait=self._keep_holds_alive)
+        except ObstructionError as exc:
+            self._release_everything()
+            raise ObstructionError(
+                f"{exc} - page turn stopped at phase {stopped_at}; check the "
+                f"mechanism before retrying"
+            ) from exc
+        finally:
+            self._paused_phase = None
+
+        if was_running:
+            self.fan.set_duty(was_running)
+        print(f"-> area clear, resuming phase {number}/{len(self._phases)} ({label})",
+              flush=True)
+
+    def _keep_holds_alive(self):
+        """Re-assert holds on a cadence comfortably inside their cut-off."""
+        cutoffs = [
+            servo_config["max_hold_seconds"]
+            for _, servo_config in self._held.values()
+        ]
+        gap = max(0.5, (min(cutoffs) if cutoffs else 10.0) / 2)
+        now = time.monotonic()
+        if now >= self._next_reassert:
+            self._reassert_holds()
+            self._next_reassert = now + gap
+
+    def _release_everything(self):
+        """Safe state after giving up: nothing powered, nothing pressing."""
+        try:
+            self.fan.set_duty(0)
+            self._fan_duty = 0
+        finally:
+            for motor in (self.stepper, self.stepper2):
+                try:
+                    motor.disable()
+                except Exception:
+                    pass
+            for servo in list(self._held):
+                try:
+                    servo.detach()
+                except Exception:
+                    pass
+            self._held.clear()
+
+    def page_turn(self):
+        """The sixteen-phase page turn, guarded throughout.
+
+        A hand appearing at any point stops the mechanism where it stands - mid
+        move, mid ramp, mid settle - and the sequence resumes from that exact
+        spot once the scan area is clear. Resuming continues the remainder of an
+        interrupted move rather than repeating it, or every interrupted page
+        would turn the wheel further than it should.
+
+        The wheels do NOT end where they started: each motor's final return
+        stops return_short_degrees short. Set it to 0 for an exact round trip.
+        """
+        arm_config = self.config["servos"]["page_drop"]
+        big_config = self.config["servos"]["page_clamp_big"]
+        small_config = self.config["servos"]["page_clamp_small"]
         workflow = self.config["workflow"]
-        dc_motor_config = self.config["dc_motor"]
-        motor_config = self.config["motor"]
-        page_drop_servo = self.servos.page_drop
+        fan_config = self.config["fan"]
+        m1_config = self.config["motor"]
+        m2_config = self.config["motor2"]
 
-        page_drop_servo.set_angle(
-            servo_config["down_angle"],
-            settle_time=servo_config["default_settle_time"],
-        )
-        time.sleep(workflow["servo_down_pause"])
+        arm = self.servos.page_drop
+        big = self.servos.page_clamp_big
+        small = self.servos.page_clamp_small
 
-        self.wheel_motor.run_for(
-            dc_motor_config["default_turn_seconds"],
-            speed=dc_motor_config["default_speed"],
-            forward=dc_motor_config["default_forward"],
-            brake=dc_motor_config["brake_after_turn"],
-        )
-        time.sleep(workflow["wheel_pause"])
+        # Split in steps, not degrees: two part-degree moves can round to one
+        # step more or less than the single full move, which would leave a
+        # wheel off by a step every page.
+        m1_first = self._steps_for(m1_config, m1_config["page_turn_degrees"])
+        m1_shared = self._steps_for(m1_config, m1_config["shared_degrees"])
+        m2_first = self._steps_for(m2_config, m2_config["page_turn_degrees"])
+        m2_shared = self._steps_for(m2_config, m2_config["shared_degrees"])
+        m2_return = m2_first + m2_shared
+        m1_home = m1_first - self._steps_for(m1_config, m1_config["return_short_degrees"])
+        m2_home = m2_return - self._steps_for(m2_config, m2_config["return_short_degrees"])
 
-        self.stepper.move_degrees(
-            motor_config["default_degrees"],
-            clockwise=motor_config["default_clockwise"],
-        )
-        time.sleep(workflow["stepper_pause"])
+        m1_cw = m1_config["default_clockwise"]
+        m2_cw = m2_config["default_clockwise"]
+        pace = workflow["motor_pause"]
 
-        page_drop_servo.set_angle(
-            servo_config["up_angle"],
-            settle_time=servo_config["default_settle_time"],
-        )
-        time.sleep(workflow["servo_up_pause"])
+        self._held = {}
+        self._fan_duty = 0
+        self._paused_phase = None
 
-        self.stepper.move_degrees(
-            motor_config["default_degrees"],
-            clockwise=not motor_config["default_clockwise"],
-        )
+        self._phases = [
+            ("small clamp down", self._seat_and_hold(small, small_config)
+                + [self._paced(workflow["small_clamp_hold_seconds"])]),
+            ("fan up to speed", [self._fan(fan_config["duty_pct"]),
+                                 self._paced(fan_config["spinup_seconds"])]),
+            ("arm down", [self._servo_move(arm, arm_config["down_angle"], arm_config),
+                          self._paced(workflow["servo_down_pause"])]),
+            ("big clamp down", self._seat_and_hold(big, big_config)
+                + [self._paced(workflow["clamp_down_pause"])]),
+            ("small clamp up", [self._servo_move(small, small_config["up_angle"], small_config),
+                                self._paced(workflow["clamp_up_pause"])]),
+            ("motor 1 out", [self._stepper_move(self.stepper, m1_first, m1_cw, keep_enabled=True),
+                             self._paced(pace)]),
+            ("arm up", [self._servo_move(arm, arm_config["up_angle"], arm_config),
+                        self._paced(workflow["servo_up_pause"])]),
+            ("fan off", [self._fan(0)]),
+            ("small clamp down again", self._seat_and_hold(small, small_config)
+                + [self._paced(workflow["clamp_down_pause"])]),
+            ("big clamp up", [self._servo_move(big, big_config["up_angle"], big_config),
+                              self._paced(workflow["clamp_up_pause"])]),
+            ("motor 2 out", [self._stepper_move(self.stepper2, m2_first, m2_cw),
+                             self._paced(pace)]),
+            ("both wheels together", [
+                self._parallel_move(
+                    self._stepper_move(self.stepper, m1_shared, m1_cw, keep_enabled=True),
+                    self._stepper_move(self.stepper2, m2_shared, m2_cw),
+                ),
+                self._paced(pace)]),
+            ("motor 2 home", [self._stepper_move(self.stepper2, m2_home, not m2_cw),
+                              self._paced(pace)]),
+            ("motor 1 back", [self._stepper_move(self.stepper, m1_shared, not m1_cw, keep_enabled=True),
+                              self._paced(pace)]),
+            ("small clamp off", [self._servo_move(small, small_config["up_angle"], small_config),
+                                 self._paced(workflow["clamp_up_pause"])]),
+            ("motor 1 home", [self._stepper_move(self.stepper, m1_home, not m1_cw)]),
+        ]
+
+        abort = self.obstruction.obstructed if self.obstruction is not None else None
+        try:
+            for index, (label, steps) in enumerate(self._phases, start=1):
+                for step in steps:
+                    while not step(abort):
+                        self._pause_for_obstruction(index, label)
+        finally:
+            # Whatever happened, the fan does not keep running.
+            self.fan.set_duty(0)
+            self._fan_duty = 0
+            self._paused_phase = None
 
     def scan_step(self, run_id):
         manifest = self.capture_page(run_id)
@@ -402,9 +770,11 @@ def serve(
     config_manager,
     config,
     camera,
-    wheel_motor,
     servos,
     stepper,
+    stepper2,
+    fan,
+    obstruction=None,
     banner=None,
     handler=ExamScanHandler,
 ):
@@ -420,11 +790,16 @@ def serve(
         config_manager,
         config,
         camera,
-        wheel_motor,
         servos,
         stepper,
+        stepper2,
+        fan,
+        obstruction,
         handler=handler,
     )
+
+    if obstruction is not None:
+        obstruction.start()
 
     if banner:
         print(banner)
@@ -438,8 +813,13 @@ def serve(
     finally:
         server.server_close()
         camera.stop()
-        wheel_motor.cleanup()
         servos.cleanup()
-        # Last, so its pull-up restore lands after everything else is released.
+        if obstruction is not None:
+            obstruction.stop()
+        # Drives the fan back to 0 and drops the pigpio connection.
+        fan.cleanup()
+        # Last, so their pull-up restore lands after everything else is
+        # released.
         stepper.cleanup()
+        stepper2.cleanup()
         print("Stopped.")

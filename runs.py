@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import time
 import zipfile
 from datetime import datetime, timezone
@@ -78,6 +79,28 @@ class RunManager:
             )
         summaries.sort(key=lambda run: (run["created_at"] or "", run["run_id"]), reverse=True)
         return summaries
+
+    def delete_all_runs(self):
+        root = self.root.resolve()
+        runs = []
+        for run_dir in self.root.iterdir():
+            manifest_path = run_dir / "manifest.json"
+            if not run_dir.is_dir() or not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            resolved = run_dir.resolve()
+            if resolved.parent != root:
+                raise RunError("refusing to delete path outside runs directory")
+            runs.append((run_dir, manifest.get("run_id", run_dir.name)))
+
+        run_ids = [run_id for _, run_id in runs]
+        for run_dir, _ in runs:
+            shutil.rmtree(run_dir)
+        self.active_run_id = None
+        return {"deleted": len(run_ids), "run_ids": run_ids}
 
     def next_capture_path(self, run_id):
         manifest = self.get_run(run_id)

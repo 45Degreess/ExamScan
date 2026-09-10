@@ -78,6 +78,10 @@ def servo_config(**overrides):
         "approach_degrees": 40.0,
         "approach_step_degrees": 1.0,
         "approach_step_delay": 0.04,
+        "departure_degrees": 10.0,
+        "departure_step_degrees": 0.5,
+        "departure_step_delay": 0.08,
+        "max_hold_seconds": 10.0,
         "down_angle": 105,
         "up_angle": 45,
         "default_settle_time": 0.4,
@@ -96,6 +100,9 @@ def ramp_config(**overrides):
         approach_degrees=20.0,
         approach_step_degrees=5.0,
         approach_step_delay=0.05,
+        departure_degrees=20.0,
+        departure_step_degrees=2.0,
+        departure_step_delay=0.1,
         **overrides,
     )
 
@@ -151,6 +158,52 @@ def test_ramp_slows_on_the_final_approach(monkeypatch):
     # The boundary is inclusive, so the step out of 80 is already a slow one.
     assert device.angles == [10, 20, 30, 40, 50, 60, 70, 80, 85, 90, 95, 100]
     assert sleeps == [0.01] * 8 + [0.05] * 4 + [0.2]
+
+
+def test_ramp_crawls_out_of_the_start_when_asked(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    sleeps = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    servo.set_angle(100, settle_time=0.2, slow_start=True)
+
+    # Fine 2-degree steps for the first 20 degrees, then the usual coarse run
+    # and the slow final approach.
+    assert device.angles == [
+        2, 4, 6, 8, 10, 12, 14, 16, 18, 20,
+        30, 40, 50, 60, 70, 80,
+        85, 90, 95, 100,
+    ]
+    assert sleeps == [0.1] * 10 + [0.01] * 6 + [0.05] * 4 + [0.2]
+
+
+def test_ramp_does_not_crawl_out_of_the_start_by_default(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    servo.set_angle(100, settle_time=0.2)
+
+    # Same move without the flag leaves at full speed.
+    assert device.angles == [10, 20, 30, 40, 50, 60, 70, 80, 85, 90, 95, 100]
+
+
+def test_short_move_crawls_throughout(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    sleeps = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    servo.set_angle(6, settle_time=0.2, slow_start=True)
+
+    # Shorter than departure_degrees, so it never picks up speed - departure
+    # takes precedence over the approach profile where the two overlap.
+    assert device.angles == [2, 4, 6]
+    assert sleeps == [0.1] * 3 + [0.2]
 
 
 def test_ramp_handles_a_downward_move(monkeypatch):
@@ -240,3 +293,148 @@ def test_controller_cleanup_closes_all_servos(monkeypatch):
     controller.cleanup()
 
     assert all(device.closed for device in FakeAngularServo.instances)
+
+
+class FakeTimer:
+    """Stands in for threading.Timer so hold tests never actually wait."""
+
+    instances = []
+
+    def __init__(self, interval, function):
+        self.interval = interval
+        self.function = function
+        self.started = False
+        self.cancelled = False
+        self.daemon = False
+        FakeTimer.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.function()
+
+
+def hold_servo(monkeypatch, **overrides):
+    module = load_servo_module(monkeypatch)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    FakeTimer.instances = []
+    monkeypatch.setattr(module.threading, "Timer", FakeTimer)
+    servo = module.ServoMotor.from_config(
+        servo_config(detach_after_move=True, **overrides)
+    )
+    return servo, FakeAngularServo.instances[0]
+
+
+def test_hold_keeps_the_servo_powered(monkeypatch):
+    servo, device = hold_servo(monkeypatch)
+
+    servo.set_angle(90, hold=True)
+
+    # Without hold this same config detaches - that is the whole point.
+    assert device.detached == 0
+    timer = FakeTimer.instances[0]
+    assert timer.interval == 10.0
+    assert timer.started is True
+    assert timer.daemon is True
+
+
+def test_default_path_still_detaches(monkeypatch):
+    """The guarantee that adding hold changed nothing for existing callers."""
+    servo, device = hold_servo(monkeypatch)
+
+    servo.set_angle(90)
+
+    assert device.detached == 1
+    assert FakeTimer.instances == []
+
+
+def test_detach_cancels_the_hold_timer(monkeypatch):
+    servo, device = hold_servo(monkeypatch)
+    servo.set_angle(90, hold=True)
+
+    servo.detach()
+
+    assert FakeTimer.instances[0].cancelled is True
+    assert device.detached == 1
+
+
+def test_hold_timer_releases_when_nothing_lifts(monkeypatch):
+    servo, device = hold_servo(monkeypatch, max_hold_seconds=2.5)
+    servo.set_angle(90, hold=True)
+
+    assert FakeTimer.instances[0].interval == 2.5
+    FakeTimer.instances[0].fire()
+
+    assert device.detached == 1
+
+
+def test_cleanup_cancels_the_hold_timer(monkeypatch):
+    servo, device = hold_servo(monkeypatch)
+    servo.set_angle(90, hold=True)
+
+    servo.cleanup()
+
+    assert FakeTimer.instances[0].cancelled is True
+    assert device.closed is True
+
+
+def test_a_second_hold_replaces_the_first_timer(monkeypatch):
+    servo, _ = hold_servo(monkeypatch)
+    servo.set_angle(90, hold=True)
+
+    servo.set_angle(45, hold=True)
+
+    first, second = FakeTimer.instances
+    assert first.cancelled is True
+    assert second.cancelled is False
+
+
+def test_set_angle_reports_reaching_the_target(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    servo = module.ServoMotor.from_config(ramp_config())
+
+    assert servo.set_angle(90) is True
+
+
+def test_abort_stops_the_ramp_and_says_so(monkeypatch):
+    module = load_servo_module(monkeypatch)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    calls = {"n": 0}
+
+    def abort_after_2():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    assert servo.set_angle(90, abort_check=abort_after_2) is False
+    assert len(device.angles) == 2
+
+
+def test_an_aborted_ramp_leaves_an_honest_position(monkeypatch):
+    """_last_angle must track the ramp, not jump to the target at the end.
+
+    Left stale, the next move would ramp from where this one began - so the arm
+    would snap back across everything it already travelled before setting off.
+    """
+    module = load_servo_module(monkeypatch)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    servo = module.ServoMotor.from_config(ramp_config())
+    device = FakeAngularServo.instances[0]
+
+    calls = {"n": 0}
+    servo.set_angle(90, abort_check=lambda: (calls.update(n=calls["n"] + 1), calls["n"] > 3)[1])
+
+    stopped_at = device.angles[-1]
+    device.angles.clear()
+    servo.set_angle(90)
+
+    # The resumed ramp starts from where the arm actually is, not from 0.
+    assert device.angles[0] != 0
+    assert min(device.angles) >= stopped_at

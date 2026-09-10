@@ -10,10 +10,11 @@ from PIL import Image
 from config import DEFAULT_CONFIG, ConfigManager
 from fakes import (
     FakeCamera,
+    FakeFan,
+    FakeObstructionMonitor,
     FakeServo,
     FakeServoController,
     FakeStepperMotor,
-    FakeWheelMotor,
 )
 from server import ExamScanServer
 
@@ -24,7 +25,6 @@ __all__ = [
     "FakeServo",
     "FakeServoController",
     "FakeStepperMotor",
-    "FakeWheelMotor",
 ]
 
 
@@ -47,8 +47,18 @@ def config_dict(tmp_path):
     # page_turn() sleeps these for real, and they exist to pace a mechanism no
     # test is driving. Left at their defaults, a multi-page auto-scan outruns the
     # client timeout.
-    for pause in ("servo_down_pause", "wheel_pause", "stepper_pause", "servo_up_pause"):
+    for pause in (
+        "clamp_down_pause",
+        "servo_down_pause",
+        "clamp_up_pause",
+        "stepper_pause",
+        "servo_up_pause",
+        "motor_pause",
+        "small_clamp_hold_seconds",
+    ):
         config["workflow"][pause] = 0.0
+    # Same reason: the fan's spin-up is a real sleep before the arm drops.
+    config["fan"]["spinup_seconds"] = 0.0
     return config
 
 
@@ -106,6 +116,9 @@ class ApiClient:
     def put(self, path, body=None):
         return self.request("PUT", path, body)
 
+    def delete(self, path):
+        return self.request("DELETE", path)
+
 
 @pytest.fixture()
 def api_server(config_manager, config, sample_image):
@@ -114,9 +127,11 @@ def api_server(config_manager, config, sample_image):
         config_manager,
         config,
         FakeCamera(sample_image),
-        FakeWheelMotor(),
         FakeServoController(),
         FakeStepperMotor(),
+        FakeStepperMotor(),
+        FakeFan(),
+        FakeObstructionMonitor(),
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

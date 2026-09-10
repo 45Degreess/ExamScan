@@ -30,6 +30,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "capture_height": 2592,
         "frame_rate": 30,
         "buffer_count": 6,
+        "lores_width": 960,
+        "lores_height": 540,
+        "exposure_mode": "short",
         "recording_start_delay": 3.0,
         "capture_stop_delay": 0.2,
         "capture_settle_delay": 0.5,
@@ -39,22 +42,32 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "step_pin": 21,
         "dir_pin": 20,
         "enable_pin": 16,
-        "steps_per_rev": 200,
+        "steps_per_rev": 1600,
         "step_delay": 0.005,
         "fast_delay": 0.001,
         "default_turn_seconds": 3.0,
         "default_degrees": 190.0,
         "default_clockwise": True,
+        "invert_direction": False,
+        "page_turn_degrees": 90.0,
+        "shared_degrees": 80.0,
+        "return_short_degrees": 10.0,
     },
-    "dc_motor": {
-        "in1_pin": 23,
-        "in2_pin": 24,
+    "motor2": {
+        "step_pin": 23,
+        "dir_pin": 24,
         "enable_pin": 25,
-        "pwm_freq": 100,
-        "default_speed": 100,
-        "default_turn_seconds": 3.0,
-        "default_forward": True,
-        "brake_after_turn": False,
+        # DRV8825 with MS1/MS2/MS3 unconnected: full step, 200 per revolution.
+        # The TMC2209 on [motor] runs 1/8 microstepping, hence its 1600.
+        "steps_per_rev": 200,
+        "step_delay": 0.002,
+        "fast_delay": 0.001,
+        "default_degrees": 190.0,
+        "default_clockwise": True,
+        "invert_direction": False,
+        "page_turn_degrees": 90.0,
+        "shared_degrees": 80.0,
+        "return_short_degrees": 10.0,
     },
     "servos": {
         "page_drop": {
@@ -69,31 +82,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "approach_degrees": 40.0,
             "approach_step_degrees": 1.0,
             "approach_step_delay": 0.04,
+            "departure_degrees": 10.0,
+            "departure_step_degrees": 0.5,
+            "departure_step_delay": 0.08,
+            "max_hold_seconds": 10.0,
             "down_angle": 105,
             "up_angle": 45,
             "default_settle_time": 0.4,
             "detach_after_move": True,
             "pin_factory": "pigpio",
         },
-        "page_clamp_left": {
-            "pin": 18,
-            "min_angle": 0,
-            "max_angle": 180,
-            "min_pulse_width": 0.0005,
-            "max_pulse_width": 0.0025,
-            "frame_width": 0.02,
-            "step_degrees": 3.0,
-            "step_delay": 0.015,
-            "approach_degrees": 40.0,
-            "approach_step_degrees": 1.0,
-            "approach_step_delay": 0.04,
-            "down_angle": 105,
-            "up_angle": 0,
-            "default_settle_time": 0.4,
-            "detach_after_move": True,
-            "pin_factory": "pigpio",
-        },
-        "page_clamp_right": {
+        "page_clamp_big": {
             "pin": 19,
             "min_angle": 0,
             "max_angle": 180,
@@ -105,18 +104,85 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "approach_degrees": 40.0,
             "approach_step_degrees": 1.0,
             "approach_step_delay": 0.04,
+            "departure_degrees": 10.0,
+            "departure_step_degrees": 0.5,
+            "departure_step_delay": 0.08,
+            "max_hold_seconds": 10.0,
             "down_angle": 105,
             "up_angle": 0,
+            "contact_angle": 105,
+            "hold_angle": 102,
+            "use_hold": True,
+            "default_settle_time": 0.4,
+            "detach_after_move": True,
+            "pin_factory": "pigpio",
+        },
+        "page_clamp_small": {
+            "pin": 27,
+            "min_angle": 0,
+            "max_angle": 180,
+            "min_pulse_width": 0.0005,
+            "max_pulse_width": 0.0025,
+            "frame_width": 0.02,
+            "step_degrees": 3.0,
+            "step_delay": 0.015,
+            "approach_degrees": 40.0,
+            "approach_step_degrees": 1.0,
+            "approach_step_delay": 0.04,
+            "departure_degrees": 10.0,
+            "departure_step_degrees": 0.5,
+            "departure_step_delay": 0.08,
+            "max_hold_seconds": 10.0,
+            "down_angle": 105,
+            "up_angle": 0,
+            "contact_angle": 88,
+            "hold_angle": 85,
+            "use_hold": True,
             "default_settle_time": 0.4,
             "detach_after_move": True,
             "pin_factory": "pigpio",
         },
     },
+    "fan": {
+        "pin": 18,
+        "frequency_hz": 25000,
+        "min_start_duty_pct": 10,
+        "tach_pin": 17,
+        "tach_pulses_per_rev": 2,
+        "duty_pct": 100,
+        "spinup_seconds": 3.0,
+    },
+    "obstruction": {
+        "enabled": True,
+        "mode": "full",
+        "model_path": "models/hand_detector.tflite",
+        "landmark_model_path": "models/hand_landmarks_detector.tflite",
+        "min_confidence": 0.3,
+        "min_presence_confidence": 0.5,
+        "min_candidate_presence_confidence": 0.01,
+        "max_hands": 2,
+        "inference_threads": 4,
+        "poll_interval": 0.1,
+        "target_interval": 0.1,
+        "source_width": 960,
+        "source_height": 540,
+        # A full-frame default is deliberately fail-safe. Calibrate this from a
+        # known-safe preview before narrowing it to the physical scan bed.
+        "bed_roi": [0.0, 0.0, 1.0, 1.0],
+        "region_schedule": ["bed", "bed", "full"],
+        "debug_overlay": False,
+        "clear_frames": 5,
+        "stale_after_seconds": 3.0,
+        "wait_timeout_seconds": 30.0,
+    },
     "workflow": {
+        "clamp_down_pause": 1.0,
         "servo_down_pause": 2.0,
-        "wheel_pause": 1.0,
+        "clamp_up_pause": 0.5,
         "stepper_pause": 1.0,
         "servo_up_pause": 1.0,
+        "small_clamp_hold_seconds": 5.0,
+        "motor_pause": 1.0,
         "default_pages": 7,
     },
 }
@@ -126,7 +192,8 @@ REQUIRED_SECTIONS = set(DEFAULT_CONFIG)
 LIVE_SECTIONS = {"server", "paths", "workflow"}
 RESTART_FIELDS = {
     "motor": {"step_pin", "dir_pin", "enable_pin"},
-    "dc_motor": {"in1_pin", "in2_pin", "enable_pin"},
+    "motor2": {"step_pin", "dir_pin", "enable_pin"},
+    "fan": {"pin", "tach_pin"},
 }
 
 
@@ -187,6 +254,11 @@ class ConfigManager:
     def restart_required(
         self, old_config: dict[str, Any], new_config: dict[str, Any]
     ) -> bool:
+        for field in ("lores_width", "lores_height", "exposure_mode"):
+            if old_config["camera"][field] != new_config["camera"][field]:
+                return True
+        if old_config["obstruction"] != new_config["obstruction"]:
+            return True
         for section, fields in RESTART_FIELDS.items():
             for field in fields:
                 if old_config[section][field] != new_config[section][field]:
@@ -220,16 +292,19 @@ class ConfigManager:
         ):
             applied.append("motor.defaults")
         if (
-            old_config["dc_motor"]["default_speed"]
-            != new_config["dc_motor"]["default_speed"]
-            or old_config["dc_motor"]["default_turn_seconds"]
-            != new_config["dc_motor"]["default_turn_seconds"]
-            or old_config["dc_motor"]["default_forward"]
-            != new_config["dc_motor"]["default_forward"]
-            or old_config["dc_motor"]["brake_after_turn"]
-            != new_config["dc_motor"]["brake_after_turn"]
+            old_config["motor2"]["default_degrees"]
+            != new_config["motor2"]["default_degrees"]
+            or old_config["motor2"]["default_clockwise"]
+            != new_config["motor2"]["default_clockwise"]
         ):
-            applied.append("dc_motor.defaults")
+            applied.append("motor2.defaults")
+        if (
+            old_config["fan"]["min_start_duty_pct"]
+            != new_config["fan"]["min_start_duty_pct"]
+            or old_config["fan"]["tach_pulses_per_rev"]
+            != new_config["fan"]["tach_pulses_per_rev"]
+        ):
+            applied.append("fan.defaults")
         for name in sorted(set(old_config["servos"]) | set(new_config["servos"])):
             old_servo = old_config["servos"].get(name)
             new_servo = new_config["servos"].get(name)
@@ -258,6 +333,11 @@ class ConfigManager:
             self._require_int(camera, key, "camera", minimum=1)
         self._require_int(camera, "frame_rate", "camera", minimum=1)
         self._require_int(camera, "buffer_count", "camera", minimum=1)
+        for key in ("lores_width", "lores_height"):
+            self._require_int(camera, key, "camera", minimum=1)
+        self._require_str(camera, "exposure_mode", "camera")
+        if camera["exposure_mode"] not in {"normal", "short"}:
+            raise ConfigError("camera.exposure_mode must be 'normal' or 'short'")
         self._require_number(camera, "lens_position", "camera", minimum=0)
         for key in (
             "recording_start_delay",
@@ -267,44 +347,135 @@ class ConfigManager:
         ):
             self._require_number(camera, key, "camera", minimum=0)
 
-        motor = config["motor"]
-        for key in ("step_pin", "dir_pin", "enable_pin"):
-            self._require_int(motor, key, "motor", minimum=0)
-        self._require_int(motor, "steps_per_rev", "motor", minimum=1)
-        self._require_number(motor, "step_delay", "motor", minimum=0)
-        self._require_number(motor, "fast_delay", "motor", minimum=0)
-        self._require_number(motor, "default_turn_seconds", "motor", minimum=0)
-        self._require_number(motor, "default_degrees", "motor", minimum=0)
-        if motor["default_degrees"] <= 0:
-            raise ConfigError("motor.default_degrees must be greater than 0")
-        self._require_bool(motor, "default_clockwise", "motor")
+        obstruction = config["obstruction"]
+        self._require_bool(obstruction, "enabled", "obstruction")
+        self._require_str(obstruction, "mode", "obstruction")
+        if obstruction["mode"] not in {"full", "palm"}:
+            raise ConfigError("obstruction.mode must be 'full' or 'palm'")
+        self._require_str(obstruction, "model_path", "obstruction")
+        self._require_str(obstruction, "landmark_model_path", "obstruction")
+        self._require_number(
+            obstruction, "min_confidence", "obstruction", minimum=0, maximum=1
+        )
+        self._require_number(
+            obstruction,
+            "min_presence_confidence",
+            "obstruction",
+            minimum=0,
+            maximum=1,
+        )
+        self._require_number(
+            obstruction,
+            "min_candidate_presence_confidence",
+            "obstruction",
+            minimum=0,
+            maximum=1,
+        )
+        if (
+            obstruction["min_candidate_presence_confidence"]
+            > obstruction["min_presence_confidence"]
+        ):
+            raise ConfigError(
+                "obstruction.min_candidate_presence_confidence cannot exceed "
+                "obstruction.min_presence_confidence"
+            )
+        self._require_int(obstruction, "max_hands", "obstruction", minimum=1, maximum=2)
+        self._require_int(
+            obstruction, "inference_threads", "obstruction", minimum=1, maximum=4
+        )
+        for key in (
+            "poll_interval",
+            "target_interval",
+            "stale_after_seconds",
+            "wait_timeout_seconds",
+        ):
+            self._require_number(obstruction, key, "obstruction", minimum=0)
+        for key in ("source_width", "source_height"):
+            self._require_int(obstruction, key, "obstruction", minimum=1)
+        if (
+            obstruction["source_width"] != camera["lores_width"]
+            or obstruction["source_height"] != camera["lores_height"]
+        ):
+            raise ConfigError(
+                "obstruction source size must match camera lores_width/lores_height"
+            )
+        roi = obstruction.get("bed_roi")
+        if (
+            not isinstance(roi, list)
+            or len(roi) != 4
+            or not all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in roi
+            )
+        ):
+            raise ConfigError("obstruction.bed_roi must contain four numbers")
+        left, top, right, bottom = roi
+        if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+            raise ConfigError(
+                "obstruction.bed_roi must be normalized [left, top, right, bottom]"
+            )
+        schedule = obstruction.get("region_schedule")
+        if (
+            not isinstance(schedule, list)
+            or not schedule
+            or not all(region in {"bed", "full"} for region in schedule)
+        ):
+            raise ConfigError(
+                "obstruction.region_schedule must be a non-empty list of 'bed'/'full'"
+            )
+        if "full" not in schedule:
+            raise ConfigError("obstruction.region_schedule must include 'full'")
+        self._require_bool(obstruction, "debug_overlay", "obstruction")
+        self._require_int(obstruction, "clear_frames", "obstruction", minimum=1)
+        # A reading older than the staleness cut-off is never treated as clear,
+        # so polling slower than that cut-off would keep the gate permanently
+        # shut on a rig that is working perfectly.
+        if obstruction["target_interval"] >= obstruction["stale_after_seconds"]:
+            raise ConfigError(
+                "obstruction.target_interval must be shorter than "
+                "obstruction.stale_after_seconds, or every reading is stale"
+            )
 
-        dc_motor = config["dc_motor"]
-        for key in ("in1_pin", "in2_pin", "enable_pin"):
-            self._require_int(dc_motor, key, "dc_motor", minimum=0)
-        self._require_int(dc_motor, "pwm_freq", "dc_motor", minimum=1)
-        self._require_number(dc_motor, "default_speed", "dc_motor", minimum=0)
-        if dc_motor["default_speed"] > 100:
-            raise ConfigError("dc_motor.default_speed must be at most 100")
-        self._require_number(dc_motor, "default_turn_seconds", "dc_motor", minimum=0)
-        self._require_bool(dc_motor, "default_forward", "dc_motor")
-        self._require_bool(dc_motor, "brake_after_turn", "dc_motor")
+        self._validate_stepper("motor", config["motor"])
+        self._validate_stepper("motor2", config["motor2"])
+
+        # Only [motor] paces the page turn, so this one is not shared.
+        self._require_number(
+            config["motor"], "default_turn_seconds", "motor", minimum=0
+        )
 
         servos = config["servos"]
         if not isinstance(servos, dict):
             raise ConfigError("section [servos] must be a table")
-        if "page_drop" not in servos:
-            raise ConfigError("servos.page_drop is required")
+        # Both are driven by the page turn, so both must exist.
+        for required in ("page_drop", "page_clamp_big", "page_clamp_small"):
+            if required not in servos:
+                raise ConfigError(f"servos.{required} is required")
         for name, servo in servos.items():
             if not isinstance(servo, dict):
                 raise ConfigError(f"servos.{name} must be a table")
             self._validate_servo(name, servo)
 
+        fan = config["fan"]
+        self._require_int(fan, "pin", "fan", minimum=0)
+        # The fan only accepts 12kHz-50kHz; anything outside that either fails to
+        # spin or whines audibly, so reject it here rather than at the hardware.
+        self._require_int(fan, "frequency_hz", "fan", minimum=12000, maximum=50000)
+        self._require_int(fan, "min_start_duty_pct", "fan", minimum=0, maximum=100)
+        self._require_int(fan, "duty_pct", "fan", minimum=0, maximum=100)
+        self._require_number(fan, "spinup_seconds", "fan", minimum=0)
+        self._require_int(fan, "tach_pin", "fan", minimum=0)
+        self._require_int(fan, "tach_pulses_per_rev", "fan", minimum=1)
+
         workflow = config["workflow"]
-        self._require_number(workflow, "servo_down_pause", "workflow", minimum=0)
-        self._require_number(workflow, "wheel_pause", "workflow", minimum=0)
-        self._require_number(workflow, "stepper_pause", "workflow", minimum=0)
-        self._require_number(workflow, "servo_up_pause", "workflow", minimum=0)
+        for pause in (
+            "clamp_down_pause",
+            "servo_down_pause",
+            "clamp_up_pause",
+            "stepper_pause",
+            "servo_up_pause",
+        ):
+            self._require_number(workflow, pause, "workflow", minimum=0)
         self._require_int(workflow, "default_pages", "workflow", minimum=1)
 
     def _require_str(self, section: dict[str, Any], key: str, name: str) -> None:
@@ -337,12 +508,40 @@ class ConfigManager:
         key: str,
         name: str,
         minimum: float | None = None,
+        maximum: float | None = None,
     ) -> None:
         value = section.get(key)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise ConfigError(f"{name}.{key} must be a number")
         if minimum is not None and value < minimum:
             raise ConfigError(f"{name}.{key} must be at least {minimum}")
+        if maximum is not None and value > maximum:
+            raise ConfigError(f"{name}.{key} must be at most {maximum}")
+
+    def _validate_stepper(self, name: str, motor: dict[str, Any]) -> None:
+        """Shared by [motor] and [motor2] - both drive a step/dir stepper."""
+        for key in ("step_pin", "dir_pin", "enable_pin"):
+            self._require_int(motor, key, name, minimum=0)
+        self._require_int(motor, "steps_per_rev", name, minimum=1)
+        self._require_number(motor, "step_delay", name, minimum=0)
+        self._require_number(motor, "fast_delay", name, minimum=0)
+        self._require_number(motor, "default_degrees", name, minimum=0)
+        if motor["default_degrees"] <= 0:
+            raise ConfigError(f"{name}.default_degrees must be greater than 0")
+        self._require_bool(motor, "default_clockwise", name)
+        self._require_bool(motor, "invert_direction", name)
+        self._require_number(motor, "page_turn_degrees", name, minimum=0)
+        self._require_number(motor, "shared_degrees", name, minimum=0)
+        self._require_number(motor, "return_short_degrees", name, minimum=0)
+        # The final return unwinds everything the motor went out, so a shortfall
+        # bigger than that would drive it backwards past its start instead of
+        # stopping short of it.
+        outward = motor["page_turn_degrees"] + motor["shared_degrees"]
+        if motor["return_short_degrees"] > outward:
+            raise ConfigError(
+                f"{name}.return_short_degrees ({motor['return_short_degrees']}) "
+                f"cannot exceed the {outward} degrees the motor goes out"
+            )
 
     def _validate_servo(self, name: str, servo: dict[str, Any]) -> None:
         section = f"servos.{name}"
@@ -357,9 +556,30 @@ class ConfigManager:
         self._require_number(servo, "approach_degrees", section, minimum=0)
         self._require_number(servo, "approach_step_degrees", section, minimum=0)
         self._require_number(servo, "approach_step_delay", section, minimum=0)
+        self._require_number(servo, "departure_degrees", section, minimum=0)
+        self._require_number(servo, "departure_step_degrees", section, minimum=0)
+        self._require_number(servo, "departure_step_delay", section, minimum=0)
+        self._require_number(servo, "max_hold_seconds", section, minimum=0)
+        if servo["max_hold_seconds"] <= 0:
+            raise ConfigError(f"{section}.max_hold_seconds must be greater than 0")
+        # Clamps seat at contact_angle then ease back to hold_angle. Only the
+        # clamps carry them, so they are checked when present rather than
+        # required of every servo.
+        if "contact_angle" in servo or "hold_angle" in servo:
+            self._require_number(servo, "contact_angle", section)
+            self._require_number(servo, "hold_angle", section)
+            self._require_bool(servo, "use_hold", section)
+            low = min(servo["min_angle"], servo["max_angle"])
+            high = max(servo["min_angle"], servo["max_angle"])
+            for key in ("contact_angle", "hold_angle"):
+                if not low <= servo[key] <= high:
+                    raise ConfigError(
+                        f"{section}.{key} ({servo[key]}) is outside the servo's "
+                        f"range {low} to {high}"
+                    )
         # Strictly positive, or the ramp loop in ServoMotor._steps would never
         # close the gap. Set the delays to 0 for full speed instead.
-        for key in ("step_degrees", "approach_step_degrees"):
+        for key in ("step_degrees", "approach_step_degrees", "departure_step_degrees"):
             if servo[key] <= 0:
                 raise ConfigError(f"{section}.{key} must be greater than 0")
         self._require_number(servo, "down_angle", section)
@@ -408,6 +628,9 @@ capture_width = 4608
 capture_height = 2592
 frame_rate = 30
 buffer_count = 6
+lores_width = 960
+lores_height = 540
+exposure_mode = "short"
 recording_start_delay = 3.0
 capture_stop_delay = 0.2
 capture_settle_delay = 0.5
@@ -417,22 +640,30 @@ capture_restart_delay = 0.2
 step_pin = 21
 dir_pin = 20
 enable_pin = 16
-steps_per_rev = 200
+steps_per_rev = 1600
 step_delay = 0.005
 fast_delay = 0.001
 default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = true
+invert_direction = false
+page_turn_degrees = 90.0
+shared_degrees = 80.0
+return_short_degrees = 10.0
 
-[dc_motor]
-in1_pin = 23
-in2_pin = 24
+[motor2]
+step_pin = 23
+dir_pin = 24
 enable_pin = 25
-pwm_freq = 100
-default_speed = 100
-default_turn_seconds = 3.0
-default_forward = true
-brake_after_turn = false
+steps_per_rev = 200
+step_delay = 0.002
+fast_delay = 0.001
+default_degrees = 190.0
+default_clockwise = true
+invert_direction = false
+page_turn_degrees = 90.0
+shared_degrees = 80.0
+return_short_degrees = 10.0
 
 [servos.page_drop]
 pin = 12
@@ -446,31 +677,17 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
+max_hold_seconds = 10.0
 down_angle = 105
 up_angle = 45
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
-[servos.page_clamp_left]
-pin = 18
-min_angle = 0
-max_angle = 180
-min_pulse_width = 0.0005
-max_pulse_width = 0.0025
-frame_width = 0.02
-step_degrees = 3.0
-step_delay = 0.015
-approach_degrees = 40.0
-approach_step_degrees = 1.0
-approach_step_delay = 0.04
-down_angle = 105
-up_angle = 0
-default_settle_time = 0.4
-detach_after_move = true
-pin_factory = "pigpio"
-
-[servos.page_clamp_right]
+[servos.page_clamp_big]
 pin = 19
 min_angle = 0
 max_angle = 180
@@ -482,16 +699,81 @@ step_delay = 0.015
 approach_degrees = 40.0
 approach_step_degrees = 1.0
 approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
+max_hold_seconds = 10.0
 down_angle = 105
 up_angle = 0
+contact_angle = 105
+hold_angle = 102
+use_hold = true
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
+[servos.page_clamp_small]
+pin = 27
+min_angle = 0
+max_angle = 180
+min_pulse_width = 0.0005
+max_pulse_width = 0.0025
+frame_width = 0.02
+step_degrees = 3.0
+step_delay = 0.015
+approach_degrees = 40.0
+approach_step_degrees = 1.0
+approach_step_delay = 0.04
+departure_degrees = 10.0
+departure_step_degrees = 0.5
+departure_step_delay = 0.08
+max_hold_seconds = 10.0
+down_angle = 105
+up_angle = 0
+contact_angle = 88
+hold_angle = 85
+use_hold = true
+default_settle_time = 0.4
+detach_after_move = true
+pin_factory = "pigpio"
+
+[fan]
+pin = 18
+frequency_hz = 25000
+min_start_duty_pct = 10
+tach_pin = 17
+tach_pulses_per_rev = 2
+duty_pct = 100
+spinup_seconds = 3.0
+
+[obstruction]
+enabled = true
+mode = "full"
+model_path = "models/hand_detector.tflite"
+landmark_model_path = "models/hand_landmarks_detector.tflite"
+min_confidence = 0.3
+min_presence_confidence = 0.5
+min_candidate_presence_confidence = 0.01
+max_hands = 2
+inference_threads = 4
+poll_interval = 0.1
+target_interval = 0.1
+source_width = 960
+source_height = 540
+bed_roi = [0.0, 0.0, 1.0, 1.0]
+region_schedule = ["bed", "bed", "full"]
+debug_overlay = false
+clear_frames = 5
+stale_after_seconds = 3.0
+wait_timeout_seconds = 30.0
+
 [workflow]
+clamp_down_pause = 1.0
 servo_down_pause = 2.0
-wheel_pause = 1.0
+clamp_up_pause = 0.5
 stepper_pause = 1.0
 servo_up_pause = 1.0
+small_clamp_hold_seconds = 5.0
+motor_pause = 1.0
 default_pages = 7
 """
