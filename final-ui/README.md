@@ -1,22 +1,61 @@
 # final-ui
 
-Operator-facing rebuild of the ExamScan frontend. Login → Create Session →
-Prepare → View Session → Review, plus a Debug page. The UI is wired to the
-FastAPI backend in `software/`; see `../docs/final-ui-api-requirements.md` for
-the per-feature status (what's implemented and anything still outstanding).
+Staff-facing ExamScan interface: sign in, create and prepare a scan session,
+scan/review booklets, and finalize the session. Administrators also manage the
+approved staff list.
 
-## Run
+## Authentication behavior
+
+- `/login` is the only public UI page.
+- `/` is the authenticated scanner dashboard and session picker.
+- Session, review, debug, PDF, and archive pages require an active staff login.
+- `/admin/users` is available only to administrators.
+- Authentication uses an HttpOnly cookie. The CSRF token returned by the API is
+  kept only in application memory, never local storage, and the API wrapper
+  adds it to every state-changing request.
+- A backend `401` clears local authentication and returns the user to `/login`.
+  Operators attempting an administrator route return to the dashboard.
+
+See [`../docs/authentication.md`](../docs/authentication.md) for account setup,
+password delivery, API contracts, and production security requirements.
+
+## Local development
+
+Start MySQL, Mailpit, and the FastAPI backend first:
+
+```bash
+cd ../software
+cp .env.example .env
+# Fill in the bootstrap administrator fields in .env.
+docker compose up -d
+uv run uvicorn scanner_api:app --reload --port 8000
+```
+
+Then start the UI:
 
 ```bash
 npm install
 npm run dev
 ```
 
-Requires the FastAPI backend running on port 8000 (from `software/`):
+Open `http://localhost:5173/login`. The Vite server proxies `/api/*` to
+`http://localhost:8000` and strips the `/api` prefix, keeping cookies and the
+MJPEG stream same-origin. Development password email is visible at
+`http://localhost:8025`.
+
+On a new database, enter the bootstrap UCT ID and choose **Email me a
+password**. Use the password from Mailpit to sign in. Once authenticated, the
+administrator can add operators through **Staff**.
+
+## Checks
 
 ```bash
-uvicorn scanner_api:app --reload --port 8000
+npm run lint
+npm run test
+npm run build
 ```
 
-`vite.config.js` proxies `/api/*` to `http://localhost:8000` (prefix
-stripped), same contract as `examscan-ui/vite.config.js`.
+Frontend tests exercise password requests, login, session restoration,
+protected-route redirects, automatic `401` handling, logout, role separation,
+and staff-management actions. Backend security tests live under
+`software/tests/` and require a MySQL database whose name ends in `_test`.

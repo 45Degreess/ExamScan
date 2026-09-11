@@ -5,6 +5,10 @@ import react from '@vitejs/plugin-react'
 // same FastAPI backend (software/scanner_api.py) on port 8000.
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    setupFiles: './src/test/setup.js',
+  },
   server: {
     proxy: {
       '/api': { target: 'http://localhost:8000', rewrite: (p) => p.replace(/^\/api/, '') }

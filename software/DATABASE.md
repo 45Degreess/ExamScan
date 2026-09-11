@@ -1,5 +1,10 @@
 # Scan Sessions & Booklet Storage — MySQL Guide
 
+> The FastAPI endpoints in this guide now require a staff session. Sign in and
+> retain the cookie before using them manually; state-changing requests also
+> require the returned `X-CSRF-Token`. See
+> [`../docs/authentication.md`](../docs/authentication.md#manual-api-debugging).
+
 This covers the MySQL-backed session/booklet storage added on top of the
 existing scan pipeline: how the two tables fit together, how to run MySQL
 locally via Docker, and how to inspect the data yourself.

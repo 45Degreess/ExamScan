@@ -1,119 +1,115 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { palette, space, font } from "../theme.js";
-import Card from "../components/Card.jsx";
+import { useLocation, useNavigate } from "react-router-dom";
 import Button from "../components/Button.jsx";
+import Card from "../components/Card.jsx";
+import FormField, { TextInput } from "../components/FormField.jsx";
 import StatusDot from "../components/StatusDot.jsx";
-import { useSession } from "../context/SessionContext.jsx";
-import { listSessions } from "../api/sessions.js";
+import { checkBackendHealth } from "../api/sessions.js";
+import { useAuth } from "../context/AuthContext.jsx";
+import { font, palette, space } from "../theme.js";
 
 export default function LoginPage() {
+  const { user, loading, signIn, requestPassword } = useAuth();
   const navigate = useNavigate();
-  const { backendOnline, piOnline } = useSession();
-  const [selectedSessionId, setSelectedSessionId] = useState("");
-  const [sessions, setSessions] = useState([]);
+  const location = useLocation();
+  const [backendOnline, setBackendOnline] = useState(false);
+  const [uctId, setUctId] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
 
-  // GET /sessions — load once the backend health check passes.
   useEffect(() => {
-    if (!backendOnline) return;
-    let cancelled = false;
-    listSessions()
-      .then((s) => !cancelled && setSessions(s))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [backendOnline]);
+    checkBackendHealth().then(setBackendOnline);
+  }, []);
 
-  const handleViewSession = () => {
-    if (!selectedSessionId) return;
-    navigate(`/sessions/${selectedSessionId}`);
+  useEffect(() => {
+    if (!loading && user) navigate(location.state?.from || "/", { replace: true });
+  }, [loading, user, navigate, location.state]);
+
+  const submitLogin = async (event) => {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    setBusy(true);
+    try {
+      await signIn(uctId, password);
+      navigate(location.state?.from || "/", { replace: true });
+    } catch (err) {
+      setError(err.message || "Incorrect UCT ID or password.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const emailPassword = async () => {
+    if (!uctId.trim()) {
+      setError("Enter your UCT ID first.");
+      return;
+    }
+    setError("");
+    setMessage("");
+    setBusy(true);
+    try {
+      const result = await requestPassword(uctId);
+      setMessage(result.message);
+    } catch (err) {
+      setError(err.message || "The password request could not be completed.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <div
+    <main
       style={{
         minHeight: "100vh",
         background: palette.bg,
-        fontFamily: font.body,
         color: palette.text,
+        fontFamily: font.body,
         display: "flex",
-        flexDirection: "column",
         alignItems: "center",
-        padding: `${space.xl}px ${space.lg}px`,
+        justifyContent: "center",
+        padding: space.lg,
       }}
     >
-      <h1 style={{ fontSize: 30, fontWeight: 700, margin: `${space.xl}px 0 ${space.xl}px` }}>
-        Welcome to ExamScan
-      </h1>
+      <div style={{ width: "100%", maxWidth: 430 }}>
+        <h1 style={{ textAlign: "center", margin: `0 0 ${space.lg}px`, fontSize: 30 }}>ExamScan</h1>
+        <Card title="Staff sign in" subtitle="Use your registered UCT staff ID and emailed password.">
+          <form onSubmit={submitLogin}>
+            <FormField label="UCT ID">
+              <TextInput
+                value={uctId}
+                onChange={(event) => setUctId(event.target.value.toUpperCase())}
+                autoComplete="username"
+                autoCapitalize="characters"
+                required
+                autoFocus
+              />
+            </FormField>
+            <FormField label="Password">
+              <TextInput
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </FormField>
 
-      <div
-        style={{
-          display: "flex",
-          gap: space.lg,
-          width: "100%",
-          maxWidth: 920,
-          flexWrap: "wrap",
-        }}
-      >
-        {/* Left — connection list (static, non-interactive) */}
-        <Card title="Connection" style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
-            <StatusDot status={backendOnline ? "green" : "red"} label="Backend" />
-            <StatusDot
-              status={piOnline ? "green" : "red"}
-              label="Raspberry Pi"
-              title="Live check via GET /pi/health (proxied to the Pi hardware server)"
-            />
-          </div>
-        </Card>
+            {error && <p role="alert" style={{ color: palette.danger, fontSize: 13, margin: `0 0 ${space.md}px` }}>{error}</p>}
+            {message && <p role="status" style={{ color: palette.success, fontSize: 13, margin: `0 0 ${space.md}px` }}>{message}</p>}
 
-        {/* Middle — session actions, gated on backend connection */}
-        <Card title="Session" style={{ flex: 1.4, minWidth: 260 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: space.md }}>
-            <Button variant="primary" disabled={!backendOnline} onClick={() => navigate("/sessions/new")}>
-              Start New Scanning Session
-            </Button>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
-              <select
-                value={selectedSessionId}
-                onChange={(e) => setSelectedSessionId(e.target.value)}
-                disabled={!backendOnline || sessions.length === 0}
-                style={{
-                  padding: "9px 12px",
-                  borderRadius: 6,
-                  border: `1px solid ${palette.borderStrong}`,
-                  fontFamily: font.body,
-                  fontSize: 13.5,
-                  color: palette.text,
-                  background: palette.surface,
-                }}
-              >
-                <option value="">
-                  {sessions.length === 0 ? "No previous sessions" : "Select a previous session…"}
-                </option>
-                {sessions.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.sessionCode} — {s.courseCode}
-                  </option>
-                ))}
-              </select>
-              <Button disabled={!backendOnline || !selectedSessionId} onClick={handleViewSession}>
-                View Session
-              </Button>
+            <div style={{ display: "flex", gap: space.sm, flexWrap: "wrap" }}>
+              <Button type="submit" variant="primary" disabled={busy || !backendOnline}>Sign in</Button>
+              <Button type="button" disabled={busy || !backendOnline} onClick={emailPassword}>Email me a password</Button>
             </div>
+          </form>
+          <div style={{ marginTop: space.lg, paddingTop: space.md, borderTop: `1px solid ${palette.border}` }}>
+            <StatusDot status={backendOnline ? "green" : "red"} label={backendOnline ? "Backend online" : "Backend offline"} />
           </div>
-        </Card>
-
-        {/* Right — debug page entry point, always enabled */}
-        <Card title="Debug" style={{ flex: 1, minWidth: 220 }}>
-          <p style={{ fontSize: 12.5, color: palette.textMuted, marginTop: 0 }}>
-            Trigger individual ExamScan components in isolation.
-          </p>
-          <Button onClick={() => navigate("/debug")}>Open Debug Page</Button>
         </Card>
       </div>
-    </div>
+    </main>
   );
 }

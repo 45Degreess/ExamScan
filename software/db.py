@@ -4,7 +4,7 @@ MySQL access layer for scan sessions and booklets.
 Config is read from env vars (DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME),
 loaded from a `.env` file if present. Schema is created with a plain
 CREATE TABLE IF NOT EXISTS on startup (see init_db()) — no migration
-tooling, since there are only two tables.
+tooling is required for the application's small schema.
 """
 from __future__ import annotations
 
@@ -27,6 +27,11 @@ _engine = create_engine(
     f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
     pool_pre_ping=True,
 )
+
+
+def get_engine():
+    """Return the shared SQLAlchemy engine for adjacent data-access modules."""
+    return _engine
 
 
 class DuplicateSessionError(Exception):

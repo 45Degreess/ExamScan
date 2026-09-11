@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { palette, space, font, radius } from "../theme.js";
+import { palette, space, font } from "../theme.js";
 import Card from "../components/Card.jsx";
 import Button from "../components/Button.jsx";
 import StatusDot from "../components/StatusDot.jsx";
