@@ -4,21 +4,77 @@ import Button from "./Button.jsx";
 import FormField, { TextInput } from "./FormField.jsx";
 import { palette, space } from "../theme.js";
 
-function CropThumb({ crop, alt }) {
-  if (!crop) return null;
+const headerStyle = {
+  fontSize: 11,
+  fontWeight: 600,
+  color: palette.textMuted,
+  borderBottom: `1px solid ${palette.border}`,
+  paddingBottom: 4,
+  marginBottom: space.sm,
+};
+
+function ReferenceCell({ label, crop, note }) {
   return (
-    <img
-      src={`data:image/png;base64,${crop}`}
-      alt={alt}
-      style={{
-        maxHeight: 34,
-        maxWidth: 180,
-        border: `1px solid ${palette.border}`,
-        borderRadius: 4,
-        imageRendering: "pixelated",
-        flexShrink: 0,
-      }}
-    />
+    <div>
+      <span style={{ display: "block", fontSize: 11, color: palette.textMuted, marginBottom: 4 }}>
+        {label}
+      </span>
+      {crop ? (
+        <img
+          src={`data:image/png;base64,${crop}`}
+          alt={label}
+          style={{
+            maxHeight: 40,
+            maxWidth: "100%",
+            border: `1px solid ${palette.border}`,
+            borderRadius: 4,
+            imageRendering: "pixelated",
+            display: "block",
+          }}
+        />
+      ) : (
+        <span style={{ fontSize: 12, color: palette.textMuted }}>{note || "—"}</span>
+      )}
+    </div>
+  );
+}
+
+// Mark row's reference cell shows both extracted candidates, each with the
+// ink crop it was read from (mark_candidates[i] pairs with mark_crop_<i+1>
+// — same order they were pooled/ranked in on the backend).
+function MarkReferenceCell({ candidates, crops }) {
+  return (
+    <div>
+      <span style={{ display: "block", fontSize: 11, color: palette.textMuted, marginBottom: 4 }}>
+        Extracted candidates
+      </span>
+      {candidates.length ? (
+        <div style={{ display: "flex", gap: space.md }}>
+          {candidates.map((value, i) => (
+            <div key={i}>
+              {crops[i] && (
+                <img
+                  src={`data:image/png;base64,${crops[i]}`}
+                  alt={`Candidate ${value}`}
+                  style={{
+                    maxHeight: 40,
+                    maxWidth: 110,
+                    border: `1px solid ${palette.border}`,
+                    borderRadius: 4,
+                    imageRendering: "pixelated",
+                    display: "block",
+                    marginBottom: 2,
+                  }}
+                />
+              )}
+              <span style={{ fontSize: 11, color: palette.textMuted }}>{value}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <span style={{ fontSize: 12, color: palette.textMuted }}>—</span>
+      )}
+    </div>
   );
 }
 
@@ -39,7 +95,7 @@ export default function BookletEditForm({ sessionCode, booklet, onSaved, onCance
       })
       .catch(() => {
         // Crops are a nice-to-have for manual review; a failed fetch just
-        // leaves the reference images/values off the form.
+        // leaves the reference column blank.
       });
     return () => {
       cancelled = true;
@@ -67,49 +123,35 @@ export default function BookletEditForm({ sessionCode, booklet, onSaved, onCance
 
   return (
     <form onSubmit={submit}>
-      <h2 style={{ margin: `0 0 ${space.md}px`, fontSize: 16 }}>Edit booklet</h2>
-      <FormField label="Emplid">
-        <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
-          <TextInput
-            value={emplid}
-            onChange={(event) => setEmplid(event.target.value)}
-            required
-            style={{ flex: 1 }}
-          />
-          <CropThumb crop={crops?.emplid_crop} alt="Scanned Emplid" />
-        </div>
-      </FormField>
-      <FormField label="Course code">
-        <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
-          <TextInput
-            value={courseCode}
-            onChange={(event) => setCourseCode(event.target.value)}
-            style={{ flex: 1 }}
-          />
-          <CropThumb crop={crops?.course_code_crop} alt="Scanned course code" />
-        </div>
-      </FormField>
-      <FormField label="Number of pages">
-        <TextInput type="number" min="1" value={numPages} onChange={(event) => setNumPages(event.target.value)} />
-      </FormField>
-      <FormField label="Mark">
-        <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
-          <TextInput
-            type="number"
-            min="0"
-            value={mark}
-            onChange={(event) => setMark(event.target.value)}
-            style={{ flex: 1 }}
-          />
-          {crops?.mark_candidates?.length > 0 && (
-            <span style={{ fontSize: 12, color: palette.textMuted, whiteSpace: "nowrap" }}>
-              Extracted: {crops.mark_candidates.join(", ")}
-            </span>
-          )}
-        </div>
-      </FormField>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: space.lg, alignItems: "start" }}>
+        <div style={headerStyle}>Field</div>
+        <div style={headerStyle}>Scanned reference</div>
+
+        <FormField label="Emplid">
+          <TextInput value={emplid} onChange={(event) => setEmplid(event.target.value)} required />
+        </FormField>
+        <ReferenceCell label="Scanned Emplid" crop={crops?.emplid_crop} />
+
+        <FormField label="Course code">
+          <TextInput value={courseCode} onChange={(event) => setCourseCode(event.target.value)} />
+        </FormField>
+        <ReferenceCell label="Scanned course code" crop={crops?.course_code_crop} />
+
+        <FormField label="Number of pages">
+          <TextInput type="number" min="1" value={numPages} onChange={(event) => setNumPages(event.target.value)} />
+        </FormField>
+        <div />
+
+        <FormField label="Mark">
+          <TextInput type="number" min="0" value={mark} onChange={(event) => setMark(event.target.value)} />
+        </FormField>
+        <MarkReferenceCell
+          candidates={crops?.mark_candidates || []}
+          crops={[crops?.mark_crop_1, crops?.mark_crop_2]}
+        />
+      </div>
       {error && <p role="alert" style={{ color: palette.danger, fontSize: 13 }}>{error}</p>}
-      <div style={{ display: "flex", gap: space.sm }}>
+      <div style={{ display: "flex", gap: space.sm, marginTop: space.sm }}>
         <Button type="submit" variant="primary" disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
         <Button disabled={saving} onClick={onCancel}>Cancel</Button>
       </div>

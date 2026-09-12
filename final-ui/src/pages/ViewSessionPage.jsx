@@ -350,33 +350,20 @@ export default function ViewSessionPage() {
             <CameraFeed />
           </Card>
 
-          {/* Bottom-left: buttons, toggling to the booklet-edit form */}
+          {/* Bottom-left: action buttons */}
           <Card style={{ flex: 1, minHeight: 180 }}>
-            {editBooklet ? (
-              <BookletEditForm
-                sessionCode={sessionCodeRef.current}
-                booklet={editBooklet}
-                onSaved={() => {
-                  setEditBooklet(null);
-                  setNotice("Booklet updated.");
-                  refreshRuns();
-                }}
-                onCancel={() => setEditBooklet(null)}
-              />
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
-                <Button onClick={handleCollectRuns} disabled={collecting || capturing}>
-                  {collecting ? "Collecting…" : "Collect New Batch"}
-                </Button>
-                <Button onClick={handleNewRun} disabled={collecting || capturing}>
-                  {capturing ? "Scanning…" : "New Single Scan"}
-                </Button>
-                <Button onClick={handleDownloadAll}>Download All PDFs</Button>
-                {notice && (
-                  <div style={{ fontSize: 12, color: palette.textMuted, marginTop: space.xs }}>{notice}</div>
-                )}
-              </div>
-            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
+              <Button onClick={handleCollectRuns} disabled={collecting || capturing}>
+                {collecting ? "Collecting…" : "Collect New Batch"}
+              </Button>
+              <Button onClick={handleNewRun} disabled={collecting || capturing}>
+                {capturing ? "Scanning…" : "New Single Scan"}
+              </Button>
+              <Button onClick={handleDownloadAll}>Download All PDFs</Button>
+              {notice && (
+                <div style={{ fontSize: 12, color: palette.textMuted, marginTop: space.xs }}>{notice}</div>
+              )}
+            </div>
           </Card>
         </div>
 
@@ -400,6 +387,21 @@ export default function ViewSessionPage() {
           <DataTable columns={columns} rows={runs} emptyText="No runs collected yet." />
         </Card>
       </div>
+
+      {editBooklet && (
+        <Card style={{ marginTop: space.lg }} title="Edit booklet">
+          <BookletEditForm
+            sessionCode={sessionCodeRef.current}
+            booklet={editBooklet}
+            onSaved={() => {
+              setEditBooklet(null);
+              setNotice("Booklet updated.");
+              refreshRuns();
+            }}
+            onCancel={() => setEditBooklet(null)}
+          />
+        </Card>
+      )}
     </div>
   );
 }
