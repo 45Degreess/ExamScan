@@ -1,8 +1,9 @@
 import { palette } from "../theme.js";
 
 /* columns: [{ key, header, render?: (row) => node }]
-   rowStyle?: (row) => style object, merged onto that row's <tr> */
-export default function DataTable({ columns, rows, emptyText = "Nothing to show yet.", maxHeight = 480, rowStyle }) {
+   rowStyle?: (row) => style object, merged onto that row's <tr>
+   onRowClick?: (row) => void, called when a row is clicked */
+export default function DataTable({ columns, rows, emptyText = "Nothing to show yet.", maxHeight = 480, rowStyle, onRowClick }) {
   if (!rows.length) {
     return (
       <div style={{ padding: "32px 16px", textAlign: "center", color: palette.textMuted, fontSize: 13 }}>
@@ -39,6 +40,7 @@ export default function DataTable({ columns, rows, emptyText = "Nothing to show 
           {rows.map((row, i) => (
             <tr
               key={row.id ?? i}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
               style={{
                 borderBottom: i < rows.length - 1 ? `1px solid ${palette.border}` : "none",
                 ...(rowStyle ? rowStyle(row) : null),
