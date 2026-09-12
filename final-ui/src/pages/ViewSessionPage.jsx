@@ -40,6 +40,7 @@ function toRow(b) {
     createdAt: b.created_at || null,
     mark: b.mark ?? null,
     markConfidence: b.mark_confidence ?? null,
+    markNeedsReview: !!b.mark_needs_review,
   };
 }
 
@@ -288,8 +289,11 @@ export default function ViewSessionPage() {
     {
       key: "mark",
       header: "Mark",
-      render: (row) =>
-        row.mark != null ? (
+      render: (row) => {
+        if (row.markNeedsReview) {
+          return <StatusDot status="red" label="Review" title="Extracted candidates didn't match the test total — edit this booklet to confirm the mark." />;
+        }
+        return row.mark != null ? (
           <span
             title={
               row.markConfidence != null
@@ -301,7 +305,8 @@ export default function ViewSessionPage() {
           </span>
         ) : (
           <span style={{ color: palette.neutral }}>—</span>
-        ),
+        );
+      },
     },
     {
       key: "delete",

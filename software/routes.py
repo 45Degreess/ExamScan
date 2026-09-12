@@ -52,7 +52,6 @@ from processing import (
     _ocr_trocr,
     _preprocess_for_ocr,
     _split_emplid_digits,
-    extract_handwritten_mark,
     extract_handwritten_mark_debug,
 )
 
@@ -146,6 +145,35 @@ def _extract_cover_fields(canonical: np.ndarray, fields: dict[str, tuple[int, in
     }
 
 
+def _resolve_mark(candidates: list[int], test_total: int | None) -> tuple[int | None, bool]:
+    """
+    Decide the real mark from the top-2 pooled handwritten-mark candidates
+    (sorted descending), given the session's configured test total. One
+    candidate is expected to be the total, the other the student's score.
+
+    Returns (mark, needs_review):
+      - No candidates, or no test_total configured: nothing to verify
+        against -> (None, True).
+      - Highest candidate != test_total: scanning error (this also covers an
+        equal-but-wrong-total pair, since this check runs first) ->
+        (None, True).
+      - Highest candidate == test_total, and either there's no second
+        candidate or it also equals the first: full marks ->
+        (test_total, False).
+      - Highest candidate == test_total, second candidate lower: normal case
+        -> (second candidate, False).
+    """
+    if not candidates or test_total is None:
+        return None, True
+    c1 = candidates[0]
+    c2 = candidates[1] if len(candidates) > 1 else None
+    if c1 != test_total:
+        return None, True
+    if c2 is None or c2 == c1:
+        return c1, False
+    return c2, False
+
+
 def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance: bool) -> dict:
     """
     Run the process-page pipeline over every image in `input_dir` (sorted by
@@ -163,7 +191,9 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
 
     student_info: dict | None = None
     cover_confidences: dict | None = None
-    mark_result: dict = {"mark": None, "mark_confidence": None, "mark_candidates": []}
+    mark_result: dict = {"mark": None, "mark_confidence": None, "candidates": []}
+    emplid_crop: str | None = None
+    course_code_crop: str | None = None
     page_paths: list[Path] = []
     page_counter = 0
     total = len(image_files)
@@ -188,6 +218,8 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
                 extraction = _extract_cover_fields(warped, COVER_FIELDS)
                 student_info = extraction["fields"]
                 cover_confidences = extraction["confidences"]
+                emplid_crop = extraction["crops"].get("Emplid") or None
+                course_code_crop = extraction["crops"].get("Course Code") or None
                 print(f"[{index}/{total}] {img_path.name}: OCR done -> {student_info}")
             except Exception as exc:
                 student_info = {"error": str(exc)}
@@ -195,8 +227,8 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
 
             print(f"[{index}/{total}] {img_path.name}: extracting handwritten mark...")
             try:
-                mark_result = extract_handwritten_mark(warped, MARK_FIELDS)
-                print(f"[{index}/{total}] {img_path.name}: mark -> {mark_result}")
+                mark_result = extract_handwritten_mark_debug(warped, MARK_FIELDS)
+                print(f"[{index}/{total}] {img_path.name}: mark -> {mark_result['mark']}")
             except Exception as exc:
                 print(f"[{index}/{total}] {img_path.name}: mark extraction failed -> {exc}")
 
@@ -236,6 +268,7 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
         pil_images[0].save(pdf_path, save_all=True, append_images=pil_images[1:])
     print(f"Done: {len(page_paths)} page(s) processed -> {output_dir}")
 
+    top_candidates = mark_result.get("candidates", [])[:2]
     return {
         "output_dir": str(output_dir),
         "num_pages": len(page_paths),
@@ -245,7 +278,10 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
         "page_files": [p.name for p in page_paths],
         "mark": mark_result["mark"],
         "mark_confidence": mark_result["mark_confidence"],
-        "mark_candidates": mark_result["mark_candidates"],
+        "mark_candidate_values": [c["value"] for c in top_candidates],
+        "mark_candidate_crops": [c["crop"] for c in top_candidates],
+        "emplid_crop": emplid_crop,
+        "course_code_crop": course_code_crop,
     }
 
 
@@ -958,12 +994,18 @@ async def create_session(
     operator_name: str = Form(...),
     test_date: str = Form(...),
     course_code: str = Form(...),
+    test_total: int = Form(...),
     class_list: UploadFile | None = File(default=None),
 ):
     """
-    Start a scan session (course code, test date, operator) that persists
-    for the lifetime of a scanning run. Booklets are then submitted against
-    this session via POST /sessions/{session_code}/booklets.
+    Start a scan session (course code, test date, operator, test total) that
+    persists for the lifetime of a scanning run. Booklets are then submitted
+    against this session via POST /sessions/{session_code}/booklets.
+
+    `test_total` is the exam's maximum mark — comparing it against the two
+    handwritten numbers extracted from a booklet's cover page is how a
+    correctly-read mark is told apart from a scanning error (see
+    _resolve_mark).
 
     An optional `class_list` CSV (Name, Pronouns, UserName, Email, Role,
     LastAccessed) seeds the session's expected-student roster: 'Student' rows
@@ -972,7 +1014,7 @@ async def create_session(
     """
     try:
         session_id = await run_in_threadpool(
-            db.create_session, session_code, operator_name, test_date, course_code
+            db.create_session, session_code, operator_name, test_date, course_code, test_total
         )
     except db.DuplicateSessionError:
         raise HTTPException(status_code=409, detail=f"session_code '{session_code}' already exists.")
@@ -1200,6 +1242,30 @@ async def edit_booklet(
     return JSONResponse({"session_code": session_code, **result})
 
 
+@router.get("/sessions/{session_code}/booklets/{booklet_id}/crops")
+async def get_booklet_crops(session_code: str, booklet_id: int):
+    """
+    Field/mark crop images captured at scan time, for the booklet edit form's
+    manual-review view: Emplid and Course Code crops shown next to their
+    fields, and the two extracted mark candidate values shown next to Mark.
+    Fetched on demand (not bundled into GET /booklets, which polls
+    frequently) since crops are only needed when an operator opens Edit.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    booklet = await run_in_threadpool(db.get_booklet, session["id"], booklet_id)
+    if booklet is None:
+        raise HTTPException(status_code=404, detail="Unknown booklet for this session.")
+
+    crops = await run_in_threadpool(db.get_booklet_crops, booklet_id)
+    if crops is None:
+        raise HTTPException(status_code=404, detail="Unknown booklet.")
+
+    return JSONResponse(crops)
+
+
 @router.delete("/sessions/{session_code}/booklets/{booklet_id}")
 async def delete_booklet(session_code: str, booklet_id: int):
     """
@@ -1346,6 +1412,10 @@ async def add_booklet(
 
         final_dir = STORAGE_ROOT / session_code / (emplid or "unknown")
 
+        candidate_values = result.get("mark_candidate_values", [])
+        candidate_crops = result.get("mark_candidate_crops", [])
+        mark, mark_needs_review = _resolve_mark(candidate_values, session.get("test_total"))
+
         booklet = await run_in_threadpool(
             functools.partial(
                 db.insert_booklet,
@@ -1357,9 +1427,14 @@ async def add_booklet(
                 str(final_dir / "combined.pdf"),
                 result.get("confidence"),
                 checksum,
-                mark=result.get("mark"),
+                mark=mark,
                 mark_confidence=result.get("mark_confidence"),
-                mark_candidates=result.get("mark_candidates"),
+                mark_candidates=candidate_values,
+                mark_needs_review=mark_needs_review,
+                emplid_crop=result.get("emplid_crop"),
+                course_code_crop=result.get("course_code_crop"),
+                mark_crop_1=candidate_crops[0] if len(candidate_crops) > 0 else None,
+                mark_crop_2=candidate_crops[1] if len(candidate_crops) > 1 else None,
             )
         )
         booklet_id = booklet["booklet_id"]
@@ -1455,6 +1530,10 @@ async def _process_collected_run(session: dict, booklet_id: int, run_id: str) ->
             ).hexdigest()
             final_dir = STORAGE_ROOT / session_code / (emplid or f"run_{run_id}")
 
+            candidate_values = result.get("mark_candidate_values", [])
+            candidate_crops = result.get("mark_candidate_crops", [])
+            mark, mark_needs_review = _resolve_mark(candidate_values, session.get("test_total"))
+
             try:
                 await run_in_threadpool(
                     functools.partial(
@@ -1467,9 +1546,14 @@ async def _process_collected_run(session: dict, booklet_id: int, run_id: str) ->
                         str(final_dir / "combined.pdf"),
                         result.get("confidence"),
                         checksum,
-                        mark=result.get("mark"),
+                        mark=mark,
                         mark_confidence=result.get("mark_confidence"),
-                        mark_candidates=result.get("mark_candidates"),
+                        mark_candidates=candidate_values,
+                        mark_needs_review=mark_needs_review,
+                        emplid_crop=result.get("emplid_crop"),
+                        course_code_crop=result.get("course_code_crop"),
+                        mark_crop_1=candidate_crops[0] if len(candidate_crops) > 0 else None,
+                        mark_crop_2=candidate_crops[1] if len(candidate_crops) > 1 else None,
                     )
                 )
             except db.DuplicateEmplidError:

@@ -14,12 +14,14 @@ export default function CreateSessionPage() {
   const [sessionName, setSessionName] = useState("");
   const [operatorName, setOperatorName] = useState("");
   const [courseCode, setCourseCode] = useState("");
+  const [testTotal, setTestTotal] = useState("");
   const [date, setDate] = useState("");
   const [studentListFile, setStudentListFile] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
-  const canSubmit = sessionName.trim() && operatorName.trim() && courseCode.trim() && date;
+  const canSubmit =
+    sessionName.trim() && operatorName.trim() && courseCode.trim() && testTotal !== "" && date;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -34,6 +36,7 @@ export default function CreateSessionPage() {
         operatorName: operatorName.trim(),
         testDate: date,
         courseCode: courseCode.trim(),
+        testTotal: Number(testTotal),
         classListFile: studentListFile,
       });
 
@@ -83,6 +86,16 @@ export default function CreateSessionPage() {
           </FormField>
           <FormField label="Course Code">
             <TextInput value={courseCode} onChange={(e) => setCourseCode(e.target.value)} placeholder="e.g. CSC3003S" required />
+          </FormField>
+          <FormField label="Test Total">
+            <TextInput
+              type="number"
+              min="0"
+              value={testTotal}
+              onChange={(e) => setTestTotal(e.target.value)}
+              placeholder="e.g. 100"
+              required
+            />
           </FormField>
           <FormField label="Date">
             <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} required />

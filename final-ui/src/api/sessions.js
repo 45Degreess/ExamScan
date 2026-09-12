@@ -33,12 +33,13 @@ export async function checkPiHealth() {
 // `classListFile` (optional) is the class-list CSV (Name, Pronouns, UserName,
 // Email, Role, LastAccessed). The backend keeps only Role=Student rows and
 // seeds the session_students roster from them.
-export async function createSession({ sessionCode, operatorName, testDate, courseCode, classListFile }) {
+export async function createSession({ sessionCode, operatorName, testDate, courseCode, testTotal, classListFile }) {
   const fd = new FormData();
   fd.append("session_code", sessionCode);
   fd.append("operator_name", operatorName);
   fd.append("test_date", testDate); // expects YYYY-MM-DD
   fd.append("course_code", courseCode);
+  fd.append("test_total", String(testTotal));
   if (classListFile) fd.append("class_list", classListFile);
   const res = await apiFetch("/sessions", { method: "POST", body: fd });
   return res.json();
@@ -151,6 +152,17 @@ export async function updateBooklet(sessionCode, bookletId, { emplid, courseCode
   const res = await apiFetch(
     `/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}`,
     { method: "PATCH", body: fd },
+  );
+  return res.json();
+}
+
+// GET /sessions/{code}/booklets/{id}/crops — real endpoint (software/routes.py).
+// Field/mark crop images captured at scan time, fetched on demand when the
+// booklet edit form opens. Returns { emplid_crop, course_code_crop,
+// mark_crop_1, mark_crop_2 (base64 PNG, no data-URI prefix), mark_candidates }.
+export async function getBookletCrops(sessionCode, bookletId) {
+  const res = await apiFetch(
+    `/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}/crops`,
   );
   return res.json();
 }
