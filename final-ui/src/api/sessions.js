@@ -77,6 +77,15 @@ export async function getSession(sessionId) {
   return toSession(await res.json());
 }
 
+// DELETE /sessions/{code} — real endpoint (software/routes.py). Permanently
+// removes the session, its booklets/roster rows, and its storage folder.
+export async function deleteSession(sessionCode) {
+  const res = await apiFetch(`/sessions/${encodeURIComponent(sessionCode)}`, {
+    method: "DELETE",
+  });
+  return res.json();
+}
+
 // GET /sessions/{code}/students — real endpoint (software/routes.py).
 // Returns { session_code, students: [{ id, name, username, role, expected,
 // scanned, booklet_id, scanned_at, status }] }.

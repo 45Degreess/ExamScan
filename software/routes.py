@@ -1293,6 +1293,27 @@ async def delete_booklet(session_code: str, booklet_id: int):
     return JSONResponse({"session_code": session_code, "deleted": True, "booklet_id": booklet_id})
 
 
+@router.delete("/sessions/{session_code}")
+async def delete_session(session_code: str):
+    """
+    Permanently remove a session: DB rows (booklets, roster, session) and its
+    on-disk storage folder. Any signed-in operator may delete, matching
+    delete_booklet's convention.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    try:
+        await run_in_threadpool(db.delete_session, session_code)
+    except db.SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Unknown session.")
+
+    shutil.rmtree(STORAGE_ROOT / session_code, ignore_errors=True)
+
+    return JSONResponse({"session_code": session_code, "deleted": True})
+
+
 def _build_session_zip(booklets: list[dict]) -> tuple[int, bytes]:
     """ZIP every existing booklet PDF, named `<emplid or id>.pdf` (emplid is
     unique per session; the regex just tames OCR-mangled values). Returns

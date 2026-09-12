@@ -51,6 +51,10 @@ class BookletNotFoundError(Exception):
     """Raised when a booklet id doesn't exist."""
 
 
+class SessionNotFoundError(Exception):
+    """Raised when a session_code doesn't exist."""
+
+
 _UNSET = object()  # "field not supplied" sentinel for partial updates
 
 
@@ -634,6 +638,30 @@ def delete_booklet(booklet_id: int) -> dict:
         conn.execute(text("DELETE FROM booklets WHERE id = :bid"), {"bid": booklet_id})
 
     return {"booklet_id": booklet_id, "session_id": cur["session_id"], "pdf_path": cur["pdf_path"]}
+
+
+def delete_session(session_code: str) -> dict:
+    """
+    Permanently remove a session: its booklets, its roster rows, then the
+    scan_sessions row itself (no ON DELETE CASCADE exists, so children must
+    go first). Raises SessionNotFoundError if the code doesn't exist.
+    Returns {"session_id", "session_code"} so the caller can remove the
+    on-disk storage folder after the transaction commits.
+    """
+    with _engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT id FROM scan_sessions WHERE session_code = :code"),
+            {"code": session_code},
+        ).mappings().first()
+        if row is None:
+            raise SessionNotFoundError(session_code)
+        session_id = row["id"]
+
+        conn.execute(text("DELETE FROM booklets WHERE session_id = :sid"), {"sid": session_id})
+        conn.execute(text("DELETE FROM session_students WHERE session_id = :sid"), {"sid": session_id})
+        conn.execute(text("DELETE FROM scan_sessions WHERE id = :sid"), {"sid": session_id})
+
+    return {"session_id": session_id, "session_code": session_code}
 
 
 def get_imported_run_ids(session_id: int) -> set[str]:
