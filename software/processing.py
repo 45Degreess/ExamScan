@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 
 import cv2
 import numpy as np
@@ -139,6 +140,181 @@ def _ocr_trocr(crop: np.ndarray) -> tuple[str, float]:
     confidence = float(np.prod(token_probs) ** (1.0 / len(token_probs))) if token_probs else 0.0
 
     return text, confidence
+
+
+# ── Handwritten mark extraction (red pen) ─────────────────────────────────────
+
+def _isolate_red_ink(bgr_crop: np.ndarray) -> np.ndarray:
+    """HSV-threshold red pen strokes in a region crop. Returns a binary mask
+    (255 = red ink) the same height/width as `bgr_crop`."""
+    hsv = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2HSV)
+    mask = (
+        cv2.inRange(hsv, (0, 70, 50), (10, 255, 255))
+        | cv2.inRange(hsv, (170, 70, 50), (180, 255, 255))
+    )
+    return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+
+_MIN_DIGIT_AREA = 40  # px^2 — drop specks/noise from the red mask
+
+
+def _find_digit_components(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Connected-component labelling on the raw (undilated) red mask — each
+    surviving component is one candidate digit stroke. No merging happens
+    here; that's `_cluster_digits`'s job."""
+    num_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    boxes = []
+    for i in range(1, num_labels):  # label 0 is the background
+        x, y, w, h, area = stats[i]
+        if area < _MIN_DIGIT_AREA:
+            continue
+        boxes.append((int(x), int(y), int(w), int(h)))
+    return boxes
+
+
+def _cluster_digits(
+    components: list[tuple[int, int, int, int]],
+) -> list[list[tuple[int, int, int, int]]]:
+    """Group digit-stroke components into numbers by proximity, capped at 2
+    digits (the examiner writes at most a two-digit mark). The merge
+    threshold scales with the components' own size on this page rather than
+    a fixed pixel constant, so a cluster that would grow past 2 components
+    is split back into a 2-component group plus a new cluster starting at
+    the next box, rather than silently read as a longer number."""
+    if not components:
+        return []
+
+    ordered = sorted(components, key=lambda c: c[0])
+    widths = [w for (_x, _y, w, _h) in ordered]
+    median_w = sorted(widths)[len(widths) // 2]
+    gap_threshold = max(1, int(0.5 * median_w))
+
+    clusters: list[list[tuple[int, int, int, int]]] = [[ordered[0]]]
+    for box in ordered[1:]:
+        prev_x, prev_y, prev_w, prev_h = clusters[-1][-1]
+        x, y, _w, h = box
+        gap = x - (prev_x + prev_w)
+        vertically_aligned = y < prev_y + prev_h and prev_y < y + h
+        if gap <= gap_threshold and vertically_aligned and len(clusters[-1]) < 2:
+            clusters[-1].append(box)
+        else:
+            clusters.append([box])
+    return clusters
+
+
+def _mask_to_ocr_image(mask: np.ndarray) -> np.ndarray:
+    """Red ink -> black, everything else -> white — the black-on-white
+    convention `_ocr_trocr` already expects."""
+    out = np.full(mask.shape, 255, dtype=np.uint8)
+    out[mask > 0] = 0
+    return out
+
+
+def _extract_candidates_from_region(
+    page_bgr: np.ndarray, region: tuple[int, int, int, int]
+) -> list[dict]:
+    """Isolate red ink inside `region`, cluster it into candidate numbers
+    (1-2 digits each), OCR each digit individually, and return
+    [{"value": int, "confidence": float, "box": (x,y,w,h), "mask_crop": ndarray}, ...]
+    for every cluster that reduces to at least one digit. "box" is in
+    absolute page-pixel coordinates (offset by `region`'s origin) and
+    "mask_crop" is the ink-mask image used for OCR — both consumed by
+    extract_handwritten_mark_debug; extract_handwritten_mark ignores them."""
+    rx, ry, rw, rh = region
+    crop = page_bgr[ry:ry + rh, rx:rx + rw]
+    mask = _isolate_red_ink(crop)
+    clusters = _cluster_digits(_find_digit_components(mask))
+
+    candidates = []
+    pad = 6
+    for cluster in clusters:
+        ordered = sorted(cluster, key=lambda c: c[0])  # left-to-right
+        digits, confidences = [], []
+        for (x, y, w, h) in ordered:
+            y0, y1 = max(0, y - pad), min(crop.shape[0], y + h + pad)
+            x0, x1 = max(0, x - pad), min(crop.shape[1], x + w + pad)
+            text, confidence = _ocr_trocr(_mask_to_ocr_image(mask[y0:y1, x0:x1]))
+            digit_text = re.sub(r"\D", "", text)
+            if not digit_text:
+                continue
+            digits.append(digit_text[0])
+            confidences.append(confidence)
+        if not digits:
+            continue
+
+        xs = [c[0] for c in cluster]
+        ys = [c[1] for c in cluster]
+        x2s = [c[0] + c[2] for c in cluster]
+        y2s = [c[1] + c[3] for c in cluster]
+        bx0, by0, bx1, by1 = min(xs), min(ys), max(x2s), max(y2s)
+
+        candidates.append({
+            "value": int("".join(digits)),
+            "confidence": sum(confidences) / len(confidences),
+            "box": (rx + bx0, ry + by0, bx1 - bx0, by1 - by0),
+            "mask_crop": mask[by0:by1, bx0:bx1],
+        })
+    return candidates
+
+
+def extract_handwritten_mark(
+    page_bgr: np.ndarray, regions: list[tuple[int, int, int, int]]
+) -> dict:
+    """Isolate red-pen ink inside each of `regions` on a canonical cover-page
+    image, segment it into individual handwritten numbers, OCR each with
+    TrOCR, and return the two highest numeric candidates pooled across every
+    region.
+
+    Returns {"mark": int | None, "mark_confidence": float | None,
+             "mark_candidates": [int, ...]} — "mark" is the single highest
+    number found (or None if nothing was read), "mark_candidates" holds up
+    to the top two values for operator review.
+    """
+    pooled: list[dict] = []
+    for region in regions:
+        pooled.extend(_extract_candidates_from_region(page_bgr, region))
+
+    pooled.sort(key=lambda c: c["value"], reverse=True)
+    top2 = pooled[:2]
+    return {
+        "mark": top2[0]["value"] if top2 else None,
+        "mark_confidence": top2[0]["confidence"] if top2 else None,
+        "mark_candidates": [c["value"] for c in top2],
+    }
+
+
+def extract_handwritten_mark_debug(
+    page_bgr: np.ndarray, regions: list[tuple[int, int, int, int]]
+) -> dict:
+    """Same extraction as extract_handwritten_mark, but returns every
+    candidate (not just the top one) with its bounding box, a base64 crop of
+    what TrOCR actually read, its region index, and which one was selected
+    as the mark — for the /extract-mark debug endpoint."""
+    pooled: list[dict] = []
+    for idx, region in enumerate(regions):
+        for c in _extract_candidates_from_region(page_bgr, region):
+            pooled.append({**c, "region_index": idx})
+
+    pooled.sort(key=lambda c: c["value"], reverse=True)
+
+    candidates = [
+        {
+            "value": c["value"],
+            "confidence": c["confidence"],
+            "box": list(c["box"]),
+            "region_index": c["region_index"],
+            "crop": _encode_b64(c["mask_crop"]),
+            "selected": i == 0,
+        }
+        for i, c in enumerate(pooled)
+    ]
+    return {
+        "mark": pooled[0]["value"] if pooled else None,
+        "mark_confidence": pooled[0]["confidence"] if pooled else None,
+        "candidates": candidates,
+        "regions_used": [list(r) for r in regions],
+        "scan_dimensions": {"width": A4_WIDTH, "height": A4_HEIGHT},
+    }
 
 
 # ── QR / booklet helpers ─────────────────────────────────────────────────────

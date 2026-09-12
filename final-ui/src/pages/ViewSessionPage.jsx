@@ -38,6 +38,8 @@ function toRow(b) {
     courseCode: b.course_code_scanned || "",
     pageCount: b.num_pages ?? "",
     createdAt: b.created_at || null,
+    mark: b.mark ?? null,
+    markConfidence: b.mark_confidence ?? null,
   };
 }
 
@@ -187,6 +189,7 @@ export default function ViewSessionPage() {
       emplid: row.emplid,
       courseCodeScanned: row.courseCode,
       numPages: row.pageCount === "" ? null : row.pageCount,
+      mark: row.mark,
     });
   };
 
@@ -281,6 +284,24 @@ export default function ViewSessionPage() {
           }
         />
       ),
+    },
+    {
+      key: "mark",
+      header: "Mark",
+      render: (row) =>
+        row.mark != null ? (
+          <span
+            title={
+              row.markConfidence != null
+                ? `OCR confidence: ${Math.round(row.markConfidence * 100)}%`
+                : "Manually entered"
+            }
+          >
+            {row.mark}
+          </span>
+        ) : (
+          <span style={{ color: palette.neutral }}>—</span>
+        ),
     },
     {
       key: "delete",

@@ -25,6 +25,10 @@ software/storage/
 # Local MySQL credentials (copy from software/.env.example)
 software/.env
 
+# Manual-testing auth artifacts from software/Makefile (session cookie + CSRF token)
+software/.cookies.txt
+software/.csrf_token
+
 # Local backups taken before editing
 *.bak
 

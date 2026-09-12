@@ -8,6 +8,7 @@ export default function BookletEditForm({ sessionCode, booklet, onSaved, onCance
   const [emplid, setEmplid] = useState(booklet.emplid || "");
   const [courseCode, setCourseCode] = useState(booklet.courseCodeScanned || "");
   const [numPages, setNumPages] = useState(booklet.numPages ?? "");
+  const [mark, setMark] = useState(booklet.mark ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -20,6 +21,7 @@ export default function BookletEditForm({ sessionCode, booklet, onSaved, onCance
         emplid: emplid.trim(),
         courseCodeScanned: courseCode.trim(),
         numPages,
+        mark,
       });
       onSaved();
     } catch (err) {
@@ -40,6 +42,9 @@ export default function BookletEditForm({ sessionCode, booklet, onSaved, onCance
       </FormField>
       <FormField label="Number of pages">
         <TextInput type="number" min="1" value={numPages} onChange={(event) => setNumPages(event.target.value)} />
+      </FormField>
+      <FormField label="Mark">
+        <TextInput type="number" min="0" value={mark} onChange={(event) => setMark(event.target.value)} />
       </FormField>
       {error && <p role="alert" style={{ color: palette.danger, fontSize: 13 }}>{error}</p>}
       <div style={{ display: "flex", gap: space.sm }}>

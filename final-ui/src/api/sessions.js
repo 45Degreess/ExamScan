@@ -142,11 +142,12 @@ export function sessionArchiveUrl(sessionCode) {
 // recomputes course_code_verified. Returns the updated
 // { emplid, course_code_scanned, num_pages, course_code_verified, student_id }.
 // Throws on 409 (emplid already used in this session) or 404.
-export async function updateBooklet(sessionCode, bookletId, { emplid, courseCodeScanned, numPages }) {
+export async function updateBooklet(sessionCode, bookletId, { emplid, courseCodeScanned, numPages, mark }) {
   const fd = new FormData();
   if (emplid != null) fd.append("emplid", emplid);
   if (courseCodeScanned != null) fd.append("course_code_scanned", courseCodeScanned);
   if (numPages != null && numPages !== "") fd.append("num_pages", String(numPages));
+  if (mark != null && mark !== "") fd.append("mark", String(mark));
   const res = await apiFetch(
     `/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}`,
     { method: "PATCH", body: fd },
@@ -181,6 +182,31 @@ export async function extractCover(file) {
   const fd = new FormData();
   fd.append("file", file);
   const res = await apiFetch("/extract-cover", { method: "POST", body: fd });
+  return res.json();
+}
+
+// POST /extract-mark — real endpoint (software/routes.py). Scans a cover
+// photo and runs handwritten red-pen mark extraction on both MARK_FIELDS
+// regions. Returns { mark, mark_confidence, candidates: [{value,
+// confidence, box, region_index, crop, selected}], regions_used,
+// scan_dimensions }. Used by the Debug page's "Scan Mark Regions" button.
+export async function extractMark(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch("/extract-mark", { method: "POST", body: fd });
+  return res.json();
+}
+
+// POST /extract-booklet — real endpoint (software/routes.py). Upload a .zip
+// of booklet page photos or a single cover photo; runs the real cover-field
+// and mark extraction against whichever cover page is found, reporting
+// per-image QR/detection status. Returns { source, num_images, images:
+// [{filename, qr_found, error}], cover_found, cover, mark } — "cover" and
+// "mark" are the same shapes /extract-cover and /extract-mark return.
+export async function extractBooklet(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch("/extract-booklet", { method: "POST", body: fd });
   return res.json();
 }
 

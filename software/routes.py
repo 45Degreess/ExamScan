@@ -38,6 +38,7 @@ from constants import (
     A3_HEIGHT,
     COVER_FIELDS,
     MCQ_COVER_FIELDS,
+    MARK_FIELDS,
     RUNS_API_BASE_URL,
 )
 from detection import detect_document
@@ -51,6 +52,8 @@ from processing import (
     _ocr_trocr,
     _preprocess_for_ocr,
     _split_emplid_digits,
+    extract_handwritten_mark,
+    extract_handwritten_mark_debug,
 )
 
 router = APIRouter()
@@ -160,6 +163,7 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
 
     student_info: dict | None = None
     cover_confidences: dict | None = None
+    mark_result: dict = {"mark": None, "mark_confidence": None, "mark_candidates": []}
     page_paths: list[Path] = []
     page_counter = 0
     total = len(image_files)
@@ -188,6 +192,13 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
             except Exception as exc:
                 student_info = {"error": str(exc)}
                 print(f"[{index}/{total}] {img_path.name}: OCR failed -> {exc}")
+
+            print(f"[{index}/{total}] {img_path.name}: extracting handwritten mark...")
+            try:
+                mark_result = extract_handwritten_mark(warped, MARK_FIELDS)
+                print(f"[{index}/{total}] {img_path.name}: mark -> {mark_result}")
+            except Exception as exc:
+                print(f"[{index}/{total}] {img_path.name}: mark extraction failed -> {exc}")
 
             page_counter += 1
             page_path = output_dir / f"page_{page_counter:03d}_cover.png"
@@ -232,6 +243,9 @@ def _process_exam_folder(input_dir: Path, output_dir: Path, method: str, enhance
         "confidence": _identity_confidence(cover_confidences),
         "pdf_filename": pdf_path.name,
         "page_files": [p.name for p in page_paths],
+        "mark": mark_result["mark"],
+        "mark_confidence": mark_result["mark_confidence"],
+        "mark_candidates": mark_result["mark_candidates"],
     }
 
 
@@ -477,6 +491,174 @@ async def extract_mcq_cover(
 
     result = _extract_cover_fields(canonical, MCQ_COVER_FIELDS)
     return JSONResponse(result)
+
+
+@router.post("/extract-mark")
+async def extract_mark(
+    file: UploadFile = File(...),
+    method: str = Form(default="colour"),
+):
+    """
+    Upload a workbook cover photo → scan it → run handwritten red-pen mark
+    extraction on both MARK_FIELDS regions → return every candidate found.
+
+    Returns:
+        {
+          "mark": int | None,
+          "mark_confidence": float | None,
+          "candidates": [
+            {"value": int, "confidence": float, "box": [x, y, w, h],
+             "region_index": 0, "crop": "<base64 PNG>", "selected": bool},
+            ...
+          ],
+          "regions_used": [[x, y, w, h], [x, y, w, h]],
+          "scan_dimensions": {"width": 2480, "height": 3508}
+        }
+    """
+    image = await _decode_upload(file)
+
+    corners = detect_document(image, method)
+    warped = four_point_transform(image, corners.reshape(4, 2))
+    canonical = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
+
+    result = extract_handwritten_mark_debug(canonical, MARK_FIELDS)
+    return JSONResponse(result)
+
+
+@router.post("/extract-booklet")
+async def extract_booklet(
+    file: UploadFile = File(...),
+    method: str = Form(default="colour"),
+):
+    """
+    Debug tool: upload either a .zip of booklet page photos (same layout as
+    a real Pi run archive) or a single cover photo, and run the real
+    extraction pipeline against it — locating the cover page (by QR) among a
+    zip's images, then running cover-field OCR and handwritten-mark
+    extraction on it. Unlike _process_exam_folder, every per-image detection
+    step is individually caught and reported rather than aborting the whole
+    request, so a bad page shows up in "images" instead of crashing.
+
+    Returns:
+        {
+          "source": "zip" | "image",
+          "num_images": int,
+          "images": [{"filename": str, "qr_found": bool | None, "error": str | None}, ...],
+          "cover_found": bool,
+          "cover": <same shape as /extract-cover response> | {"error": str} | None,
+          "mark": <same shape as /extract-mark response> | {"error": str} | None,
+        }
+    """
+    data = await file.read()
+
+    if zipfile.is_zipfile(io.BytesIO(data)):
+        staging = Path(tempfile.mkdtemp(prefix="examscan_debug_"))
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                zf.extractall(staging)
+
+            # Same "descend into the single nested dir" convention as
+            # _process_collected_run.
+            children = list(staging.iterdir())
+            subdirs = [p for p in children if p.is_dir()]
+            has_top_level_images = any(
+                p.is_file() and p.suffix.lower() in _IMAGE_EXTS for p in children
+            )
+            scan_dir = subdirs[0] if len(subdirs) == 1 and not has_top_level_images else staging
+
+            image_files = sorted(
+                f for f in scan_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in _IMAGE_EXTS
+            )
+            if not image_files:
+                raise HTTPException(status_code=400, detail="No images found in the uploaded zip.")
+
+            images_log = []
+            cover_result = None
+            mark_result = None
+            cover_found = False
+
+            for img_path in image_files:
+                image = cv2.imread(str(img_path))
+                if image is None:
+                    images_log.append({"filename": img_path.name, "qr_found": None, "error": "Unreadable image."})
+                    continue
+
+                qr_found, _ = detect_qr_code(image)
+                entry = {"filename": img_path.name, "qr_found": qr_found, "error": None}
+
+                if qr_found:
+                    try:
+                        corners = detect_document(image, method)
+                        warped = four_point_transform(image, corners.reshape(4, 2))
+                        canonical = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
+                    except Exception as exc:
+                        entry["error"] = f"Page-frame detection failed: {exc}"
+                        images_log.append(entry)
+                        continue
+
+                    cover_found = True  # matches _process_exam_folder: last cover page wins
+                    try:
+                        cover_result = _extract_cover_fields(canonical, COVER_FIELDS)
+                    except Exception as exc:
+                        cover_result = {"error": str(exc)}
+                        entry["error"] = f"Cover-field OCR failed: {exc}"
+                    try:
+                        mark_result = extract_handwritten_mark_debug(canonical, MARK_FIELDS)
+                    except Exception as exc:
+                        mark_result = {"error": str(exc)}
+
+                images_log.append(entry)
+
+            return JSONResponse({
+                "source": "zip",
+                "num_images": len(image_files),
+                "images": images_log,
+                "cover_found": cover_found,
+                "cover": cover_result,
+                "mark": mark_result,
+            })
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    # Single image: treat it directly as the cover photo, same as
+    # /extract-cover and /extract-mark already do (no QR check).
+    np_arr = np.frombuffer(data, np.uint8)
+    image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(status_code=400, detail="Invalid image file.")
+
+    try:
+        corners = detect_document(image, method)
+        warped = four_point_transform(image, corners.reshape(4, 2))
+        canonical = cv2.resize(warped, (A4_WIDTH, A4_HEIGHT), interpolation=cv2.INTER_CUBIC)
+    except Exception as exc:
+        return JSONResponse({
+            "source": "image",
+            "num_images": 1,
+            "images": [{"filename": file.filename, "qr_found": None, "error": f"Page-frame detection failed: {exc}"}],
+            "cover_found": False,
+            "cover": None,
+            "mark": None,
+        })
+
+    try:
+        cover_result = _extract_cover_fields(canonical, COVER_FIELDS)
+    except Exception as exc:
+        cover_result = {"error": str(exc)}
+    try:
+        mark_result = extract_handwritten_mark_debug(canonical, MARK_FIELDS)
+    except Exception as exc:
+        mark_result = {"error": str(exc)}
+
+    return JSONResponse({
+        "source": "image",
+        "num_images": 1,
+        "images": [{"filename": file.filename, "qr_found": None, "error": None}],
+        "cover_found": True,
+        "cover": cover_result,
+        "mark": mark_result,
+    })
 
 
 @router.post("/process-folder")
@@ -975,11 +1157,13 @@ async def edit_booklet(
     emplid: str | None = Form(default=None),
     course_code_scanned: str | None = Form(default=None),
     num_pages: int | None = Form(default=None),
+    mark: int | None = Form(default=None),
 ):
     """
     Operator edit of a booklet's OCR-derived fields. Only the supplied fields
     change; changing `emplid` re-links the class-list roster, changing the
-    course code recomputes `course_code_verified`.
+    course code recomputes `course_code_verified`. `mark` is a manual
+    override of the auto-extracted handwritten mark.
     """
     session = await run_in_threadpool(db.get_session, session_code)
     if session is None:
@@ -996,6 +1180,8 @@ async def edit_booklet(
         kwargs["course_code_scanned"] = course_code_scanned
     if num_pages is not None:
         kwargs["num_pages"] = num_pages
+    if mark is not None:
+        kwargs["mark"] = mark
     if not kwargs:
         raise HTTPException(status_code=400, detail="No fields to update.")
 
@@ -1161,15 +1347,20 @@ async def add_booklet(
         final_dir = STORAGE_ROOT / session_code / (emplid or "unknown")
 
         booklet = await run_in_threadpool(
-            db.insert_booklet,
-            session["id"],
-            emplid,
-            scanned_course,
-            verified,
-            result["num_pages"],
-            str(final_dir / "combined.pdf"),
-            result.get("confidence"),
-            checksum,
+            functools.partial(
+                db.insert_booklet,
+                session["id"],
+                emplid,
+                scanned_course,
+                verified,
+                result["num_pages"],
+                str(final_dir / "combined.pdf"),
+                result.get("confidence"),
+                checksum,
+                mark=result.get("mark"),
+                mark_confidence=result.get("mark_confidence"),
+                mark_candidates=result.get("mark_candidates"),
+            )
         )
         booklet_id = booklet["booklet_id"]
 
@@ -1266,15 +1457,20 @@ async def _process_collected_run(session: dict, booklet_id: int, run_id: str) ->
 
             try:
                 await run_in_threadpool(
-                    db.update_booklet_result,
-                    booklet_id,
-                    emplid,
-                    scanned_course,
-                    verified,
-                    result["num_pages"],
-                    str(final_dir / "combined.pdf"),
-                    result.get("confidence"),
-                    checksum,
+                    functools.partial(
+                        db.update_booklet_result,
+                        booklet_id,
+                        emplid,
+                        scanned_course,
+                        verified,
+                        result["num_pages"],
+                        str(final_dir / "combined.pdf"),
+                        result.get("confidence"),
+                        checksum,
+                        mark=result.get("mark"),
+                        mark_confidence=result.get("mark_confidence"),
+                        mark_candidates=result.get("mark_candidates"),
+                    )
                 )
             except db.DuplicateEmplidError:
                 await run_in_threadpool(

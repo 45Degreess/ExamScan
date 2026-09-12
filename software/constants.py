@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
+
 # Base URL of the runs API that serves page archives at
 # GET {RUNS_API_BASE_URL}/api/runs/{id}/archive.
 # TODO: update to the real runs-API host once deployed/known.
-RUNS_API_BASE_URL = "http://10.42.0.1:8000"
+# Overridable via the RUNS_API_BASE_URL env var — used by
+# `make collect-runs` (software/Makefile) to point at a local fake-Pi server
+# instead of real hardware.
+RUNS_API_BASE_URL = os.environ.get("RUNS_API_BASE_URL", "http://10.42.0.1:8000")
 
 A4_WIDTH  = 2480   # 210 mm at 300 DPI
 A4_HEIGHT = 3508   # 297 mm at 300 DPI
@@ -33,3 +38,13 @@ MCQ_COVER_FIELDS: dict[str, tuple[int, int, int, int]] = {
     "Emplid":      (106, 117, 274, 41),
     "Course Code": (140, 164, 240, 37),
 }
+
+# Two regions (on the cover page's canonical A4 image) where the examiner's
+# red-pen total mark might be written — both are always checked, and the
+# highest number found across either wins. Placeholder — calibrate against a
+# real marked cover page the same way as COVER_FIELDS above before relying
+# on these.
+MARK_FIELDS: list[tuple[int, int, int, int]] = [
+    (883, 343, 734, 588),
+    (1410, 1139, 1005, 1456),
+]
