@@ -218,7 +218,7 @@ export default function DebugPage() {
     <div style={{ minHeight: "100vh", background: palette.bg, fontFamily: font.body, color: palette.text, padding: space.lg }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: space.lg }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Debug</h1>
-        <Button variant="subtle" onClick={() => navigate("/")}>← Back to Login</Button>
+        <Button variant="subtle" onClick={() => navigate("/home")}>← Back to Login</Button>
       </div>
 
       <Card

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import functools
+import hashlib
 import io
 import json
 import logging
@@ -1062,13 +1063,35 @@ async def finalize_session(
     Confirm a session's results: apply the final `expected` flags (everyone
     expected, then the `excluded` usernames not) and mark the session
     finalized. Advisory only — nothing is locked — and idempotent.
+
+    Best-effort clears the Pi's stored runs (DELETE {RUNS_API_BASE_URL}/api/runs)
+    afterwards so scan data doesn't linger on the hardware. Cleanup failures
+    (unreachable Pi, hardware busy, etc.) are logged but never fail the
+    request — the session is finalized in the DB regardless.
     """
     session = await run_in_threadpool(db.get_session, session_code)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
 
     summary = await run_in_threadpool(db.finalize_session, session["id"], excluded)
-    return JSONResponse({"session_code": session_code, **summary})
+
+    runs_cleared = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.delete(f"{RUNS_API_BASE_URL}/api/runs")
+        if resp.status_code == 200:
+            runs_cleared = resp.json().get("deleted")
+        else:
+            logger.warning(
+                "Pi run cleanup failed for session '%s' (status %s): %s",
+                session_code, resp.status_code, resp.text,
+            )
+    except httpx.HTTPError as e:
+        logger.warning(
+            "Could not reach runs API to clear runs for session '%s': %s", session_code, e
+        )
+
+    return JSONResponse({"session_code": session_code, "runs_cleared": runs_cleared, **summary})
 
 
 @router.post("/sessions/{session_code}/booklets")
@@ -1084,8 +1107,9 @@ async def add_booklet(
     session's declared course code, and persist the PDF + metadata to MySQL.
 
     Course-code mismatches are stored and flagged (course_code_verified =
-    False), never rejected. A repeat Emplid within the same session is
-    rejected (409) rather than overwritten.
+    False), never rejected. A repeat Emplid within the same session, or a
+    booklet whose PDF content (checksum) matches one already recorded for
+    the session, is rejected (409) rather than overwritten.
     """
     session = await run_in_threadpool(db.get_session, session_code)
     if session is None:
@@ -1103,6 +1127,9 @@ async def add_booklet(
         emplid = student_info.get("Emplid", "")
         scanned_course = student_info.get("Course Code", "")
         verified = scanned_course.strip().upper() == session["course_code"].strip().upper()
+        checksum = hashlib.sha256(
+            (staging_output / result["pdf_filename"]).read_bytes()
+        ).hexdigest()
 
         final_dir = STORAGE_ROOT / session_code / (emplid or "unknown")
 
@@ -1115,6 +1142,7 @@ async def add_booklet(
             result["num_pages"],
             str(final_dir / "combined.pdf"),
             result.get("confidence"),
+            checksum,
         )
         booklet_id = booklet["booklet_id"]
 
@@ -1126,6 +1154,14 @@ async def add_booklet(
         raise HTTPException(
             status_code=409,
             detail=f"Emplid '{emplid}' already recorded for session '{session_code}'.",
+        )
+    except db.DuplicateChecksumError:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This booklet's contents match a booklet already recorded "
+                f"for session '{session_code}'."
+            ),
         )
     finally:
         shutil.rmtree(staging_output, ignore_errors=True)  # no-op once already moved
@@ -1196,6 +1232,9 @@ async def _process_collected_run(session: dict, booklet_id: int, run_id: str) ->
             verified = (
                 scanned_course.strip().upper() == session["course_code"].strip().upper()
             )
+            checksum = hashlib.sha256(
+                (staging_output / result["pdf_filename"]).read_bytes()
+            ).hexdigest()
             final_dir = STORAGE_ROOT / session_code / (emplid or f"run_{run_id}")
 
             try:
@@ -1208,12 +1247,21 @@ async def _process_collected_run(session: dict, booklet_id: int, run_id: str) ->
                     result["num_pages"],
                     str(final_dir / "combined.pdf"),
                     result.get("confidence"),
+                    checksum,
                 )
             except db.DuplicateEmplidError:
                 await run_in_threadpool(
                     db.mark_booklet_error,
                     booklet_id,
                     f"Emplid '{emplid}' already recorded for session '{session_code}'.",
+                )
+                return
+            except db.DuplicateChecksumError:
+                await run_in_threadpool(
+                    db.mark_booklet_error,
+                    booklet_id,
+                    f"This booklet's contents match a booklet already recorded "
+                    f"for session '{session_code}'.",
                 )
                 return
 
@@ -1254,11 +1302,12 @@ async def collect_runs(session_code: str, background_tasks: BackgroundTasks):
         )
 
     payload = resp.json()
+
     runs = payload.get("runs", payload) if isinstance(payload, dict) else payload
     already = await run_in_threadpool(db.get_imported_run_ids, session["id"])
 
     completed = [
-        r for r in runs
+    r for r in runs
         if isinstance(r, dict) and r.get("status") == "complete" and r.get("run_id")
     ]
     new_runs = [r for r in completed if r["run_id"] not in already]

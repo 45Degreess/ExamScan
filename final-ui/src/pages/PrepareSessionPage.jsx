@@ -36,7 +36,7 @@ export default function PrepareSessionPage() {
       }
       if (cancelled) return;
       if (!s) {
-        navigate("/");
+        navigate("/home");
         return;
       }
       setSession(s);
@@ -166,7 +166,7 @@ export default function PrepareSessionPage() {
             who should not be flagged as missing.
           </p>
         </div>
-        <Button variant="subtle" onClick={() => navigate("/")}>← Back to Login</Button>
+        <Button variant="subtle" onClick={() => navigate("/home")}>← Back to Login</Button>
       </div>
 
       <Card style={{ maxWidth: 720 }} title="Class List">

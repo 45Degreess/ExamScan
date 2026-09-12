@@ -94,7 +94,7 @@ export default function ReviewSessionPage() {
       }
       if (cancelled) return;
       if (!s) {
-        navigate("/");
+        navigate("/home");
         return;
       }
       setSession(s);
@@ -139,7 +139,7 @@ export default function ReviewSessionPage() {
         .filter((it) => it.username && !selected.has(it.id))
         .map((it) => it.username);
       await finalizeSession(session.sessionCode, excluded);
-      navigate("/");
+      navigate("/home");
     } catch (e) {
       setError(e.message);
       setSubmitting(false);
@@ -292,8 +292,8 @@ export default function ReviewSessionPage() {
             {submitting
               ? "Finalizing…"
               : confirmArmed
-                ? "Confirm — locks the session"
-                : "End session and confirm results"}
+                ? "Confirm"
+                : "Finalize session"}
           </Button>
         </div>
       </div>

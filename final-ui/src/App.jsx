@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { SessionProvider } from "./context/SessionContext.jsx";
+import StartupPage from "./pages/StartupPage.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import CreateSessionPage from "./pages/CreateSessionPage.jsx";
 import PrepareSessionPage from "./pages/PrepareSessionPage.jsx";
@@ -12,7 +13,8 @@ export default function App() {
     <SessionProvider>
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<LoginPage />} />
+          <Route path="/" element={<StartupPage />} />
+          <Route path="/home" element={<LoginPage />} />
           <Route path="/sessions/new" element={<CreateSessionPage />} />
           <Route path="/sessions/:sessionId/prepare" element={<PrepareSessionPage />} />
           <Route path="/sessions/:sessionId/review" element={<ReviewSessionPage />} />

@@ -108,7 +108,7 @@ export default function CreateSessionPage() {
           )}
 
           <div style={{ display: "flex", gap: space.sm, justifyContent: "flex-end" }}>
-            <Button variant="subtle" onClick={() => navigate("/")}>Cancel</Button>
+            <Button variant="subtle" onClick={() => navigate("/home")}>Cancel</Button>
             <Button type="submit" variant="primary" disabled={!canSubmit || submitting}>
               {submitting ? "Creating…" : "Create Session"}
             </Button>

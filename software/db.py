@@ -37,6 +37,11 @@ class DuplicateEmplidError(Exception):
     """Raised when (session_id, emplid) already exists."""
 
 
+class DuplicateChecksumError(Exception):
+    """Raised when (session_id, checksum) already exists — the booklet's PDF
+    content is identical to one already stored in this session."""
+
+
 class BookletNotFoundError(Exception):
     """Raised when a booklet id doesn't exist."""
 
@@ -102,9 +107,11 @@ def init_db() -> None:
                 run_id VARCHAR(64) NULL,
                 status VARCHAR(32) NOT NULL DEFAULT 'complete',
                 error_message VARCHAR(512) NULL,
+                checksum VARCHAR(64) NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES scan_sessions(id),
                 UNIQUE KEY uq_session_emplid (session_id, emplid),
+                UNIQUE KEY uq_session_checksum (session_id, checksum),
                 KEY idx_booklets_student (student_id),
                 KEY idx_booklets_run (session_id, run_id)
             )
@@ -126,12 +133,22 @@ def init_db() -> None:
                             "ALTER TABLE booklets ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'complete'")
         _add_col_if_missing(conn, "booklets", "error_message",
                             "ALTER TABLE booklets ADD COLUMN error_message VARCHAR(512) NULL")
+        _add_col_if_missing(conn, "booklets", "checksum",
+                            "ALTER TABLE booklets ADD COLUMN checksum VARCHAR(64) NULL")
         if not conn.execute(text("""
             SELECT COUNT(*) FROM information_schema.statistics
             WHERE table_schema = DATABASE()
               AND table_name = 'booklets' AND index_name = 'idx_booklets_run'
         """)).scalar():
             conn.execute(text("ALTER TABLE booklets ADD KEY idx_booklets_run (session_id, run_id)"))
+        if not conn.execute(text("""
+            SELECT COUNT(*) FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = 'booklets' AND index_name = 'uq_session_checksum'
+        """)).scalar():
+            conn.execute(text(
+                "ALTER TABLE booklets ADD UNIQUE KEY uq_session_checksum (session_id, checksum)"
+            ))
         _add_col_if_missing(conn, "scan_sessions", "status",
                             "ALTER TABLE scan_sessions ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'open'")
         _add_col_if_missing(conn, "scan_sessions", "finalized_at",
@@ -199,6 +216,17 @@ def get_session_by_id(session_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def _raise_for_booklet_integrity_error(
+    exc: IntegrityError, emplid: str, checksum: str | None
+) -> None:
+    """Distinguish which unique key on `booklets` a failed insert/update
+    violated (uq_session_checksum vs uq_session_emplid) and raise the
+    matching error."""
+    if checksum is not None and "uq_session_checksum" in str(exc.orig):
+        raise DuplicateChecksumError(checksum) from exc
+    raise DuplicateEmplidError(emplid) from exc
+
+
 def insert_booklet(
     session_id: int,
     emplid: str,
@@ -207,6 +235,7 @@ def insert_booklet(
     num_pages: int | None,
     pdf_path: str,
     confidence: float | None = None,
+    checksum: str | None = None,
 ) -> dict:
     """
     Insert a booklet and try to link it to an expected class-list student
@@ -214,7 +243,9 @@ def insert_booklet(
     found, booklets.student_id is set and the roster row is marked scanned.
 
     `confidence` is a 0-1 scalar OCR confidence for the cover fields, or None
-    when no cover page was extracted.
+    when no cover page was extracted. `checksum` is a SHA-256 hex digest of
+    the booklet's PDF content, or None; a booklet whose checksum matches one
+    already stored in this session is rejected (DuplicateChecksumError).
 
     Returns {"booklet_id": int, "student_id": int | None} — student_id is None
     for a booklet whose emplid isn't on the class list (flagged for review).
@@ -225,10 +256,10 @@ def insert_booklet(
                 text("""
                     INSERT INTO booklets
                         (session_id, emplid, course_code_scanned, course_code_verified,
-                         num_pages, confidence, pdf_path)
+                         num_pages, confidence, pdf_path, checksum)
                     VALUES
                         (:session_id, :emplid, :course_code_scanned, :verified,
-                         :num_pages, :confidence, :pdf_path)
+                         :num_pages, :confidence, :pdf_path, :checksum)
                 """),
                 {
                     "session_id": session_id,
@@ -238,13 +269,14 @@ def insert_booklet(
                     "num_pages": num_pages,
                     "confidence": confidence,
                     "pdf_path": pdf_path,
+                    "checksum": checksum,
                 },
             )
             booklet_id = result.lastrowid
             student_id = _link_booklet_to_student(conn, session_id, booklet_id, emplid)
             return {"booklet_id": booklet_id, "student_id": student_id}
     except IntegrityError as exc:
-        raise DuplicateEmplidError(emplid) from exc
+        _raise_for_booklet_integrity_error(exc, emplid, checksum)
 
 
 def _link_booklet_to_student(conn, session_id: int, booklet_id: int, emplid: str) -> int | None:
@@ -321,13 +353,15 @@ def update_booklet_result(
     num_pages: int | None,
     pdf_path: str,
     confidence: float | None = None,
+    checksum: str | None = None,
 ) -> dict:
     """
     Fill in a placeholder booklet (see create_pending_booklet) with real OCR
     results, mark it 'complete', and link it to a class-list student the same
     way insert_booklet does. Raises DuplicateEmplidError if `emplid` now
-    collides with another booklet in the same session (the caller marks the
-    row errored and leaves the sentinel emplid in place).
+    collides with another booklet in the same session, or
+    DuplicateChecksumError if `checksum` matches another booklet's (the caller
+    marks the row errored and leaves the sentinel emplid in place).
 
     Returns {"booklet_id": int, "student_id": int | None}.
     """
@@ -349,6 +383,7 @@ def update_booklet_result(
                         num_pages = :num_pages,
                         confidence = :confidence,
                         pdf_path = :pdf_path,
+                        checksum = :checksum,
                         status = 'complete',
                         error_message = NULL
                     WHERE id = :bid
@@ -360,13 +395,14 @@ def update_booklet_result(
                     "num_pages": num_pages,
                     "confidence": confidence,
                     "pdf_path": pdf_path,
+                    "checksum": checksum,
                     "bid": booklet_id,
                 },
             )
             student_id = _link_booklet_to_student(conn, session_id, booklet_id, emplid)
             return {"booklet_id": booklet_id, "student_id": student_id}
     except IntegrityError as exc:
-        raise DuplicateEmplidError(emplid) from exc
+        _raise_for_booklet_integrity_error(exc, emplid, checksum)
 
 
 def mark_booklet_error(booklet_id: int, message: str) -> None:

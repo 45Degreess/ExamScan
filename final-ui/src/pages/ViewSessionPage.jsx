@@ -32,6 +32,7 @@ function toRow(b) {
     status: b.status,
     errorMessage: b.error_message,
     confidence,
+    confidenceScore: b.confidence,
     emplid: b.emplid || "",
     courseCode: b.course_code_scanned || "",
     pageCount: b.num_pages ?? "",
@@ -61,7 +62,7 @@ export default function ViewSessionPage() {
       }
       if (cancelled) return;
       if (!session) {
-        navigate("/");
+        navigate("/home");
         return;
       }
       const sessionCode = session.sessionCode;
@@ -217,6 +218,11 @@ export default function ViewSessionPage() {
       render: (row) => (
         <StatusDot
           status={row.confidence}
+          label={
+            row.confidenceScore != null
+              ? `${Math.round(row.confidenceScore * 100)}%`
+              : undefined
+          }
           title={
             row.confidence === "gray"
               ? "No confidence score until the run finishes processing"
@@ -242,7 +248,7 @@ export default function ViewSessionPage() {
               Edit class list
             </Button>
           )}
-          <Button variant="subtle" onClick={() => navigate("/")}>← Back to Login</Button>
+          <Button variant="subtle" onClick={() => navigate("/home")}>← Back to Login</Button>
         </div>
       </div>
 
