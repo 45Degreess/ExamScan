@@ -8,7 +8,7 @@ import DataTable from "../components/DataTable.jsx";
 import CameraFeed from "../components/CameraFeed.jsx";
 import BookletEditForm from "../components/BookletEditForm.jsx";
 import { useSession } from "../context/SessionContext.jsx";
-import { captureRun, collectRuns, listBooklets } from "../api/runs.js";
+import { captureRun, collectRuns, deleteBooklet, listBooklets } from "../api/runs.js";
 import { bookletPdfUrl, sessionArchiveUrl } from "../api/sessions.js";
 
 const POLL_MS = 4000;
@@ -29,6 +29,7 @@ function toRow(b) {
   return {
     id: b.run_id || `#${b.id}`,
     bookletId: b.id,
+    studentName: b.name || null,
     status: b.status,
     errorMessage: b.error_message,
     confidence,
@@ -36,6 +37,7 @@ function toRow(b) {
     emplid: b.emplid || "",
     courseCode: b.course_code_scanned || "",
     pageCount: b.num_pages ?? "",
+    createdAt: b.created_at || null,
   };
 }
 
@@ -47,6 +49,7 @@ export default function ViewSessionPage() {
   const [editBooklet, setEditBooklet] = useState(null);
   const [collecting, setCollecting] = useState(false);
   const [capturing, setCapturing] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [notice, setNotice] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const sessionCodeRef = useRef(null);
@@ -153,6 +156,31 @@ export default function ViewSessionPage() {
     window.open(sessionArchiveUrl(sessionCode), "_blank", "noopener");
   };
 
+  const handleDelete = async (row) => {
+    const label = row.studentName || row.id;
+    if (
+      !window.confirm(
+        `Delete booklet "${label}"? This permanently removes its PDF and cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    const sessionCode = sessionCodeRef.current;
+    if (!sessionCode) return;
+    setDeletingId(row.bookletId);
+    setNotice(null);
+    try {
+      await deleteBooklet(sessionCode, row.bookletId);
+      setRuns((prev) => prev.filter((r) => r.bookletId !== row.bookletId));
+      setNotice("Booklet deleted.");
+    } catch (e) {
+      setNotice(e.message);
+      refreshRuns(); // re-sync in case the row wasn't actually removed server-side
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const openEdit = (row) => {
     setEditBooklet({
       id: row.bookletId,
@@ -165,7 +193,18 @@ export default function ViewSessionPage() {
   if (!currentSession) return null;
 
   const columns = [
-    { key: "id", header: "Run ID" },
+    {
+      key: "id",
+      header: "Script ID",
+      render: (row) => (
+        <span>
+          {row.studentName || row.id}
+          {row.studentName && (
+            <span style={{ color: palette.textMuted, fontSize: 11 }}> ({row.id})</span>
+          )}
+        </span>
+      ),
+    },
     {
       key: "status",
       header: "Completion Status",
@@ -174,6 +213,16 @@ export default function ViewSessionPage() {
           <StatusDot status={STATUS_DOT[row.status] || "red"} label={STATUS_LABEL[row.status] || row.status} />
         </span>
       ),
+    },
+    {
+      key: "date",
+      header: "Date",
+      render: (row) =>
+        row.createdAt ? (
+          <span>{new Date(row.createdAt).toLocaleString()}</span>
+        ) : (
+          <span style={{ color: palette.neutral }}>—</span>
+        ),
     },
     {
       key: "view",
@@ -233,6 +282,20 @@ export default function ViewSessionPage() {
         />
       ),
     },
+    {
+      key: "delete",
+      header: "",
+      render: (row) => (
+        <Button
+          variant="danger"
+          style={{ padding: "4px 10px" }}
+          disabled={deletingId === row.bookletId}
+          onClick={() => handleDelete(row)}
+        >
+          {deletingId === row.bookletId ? "Deleting…" : "Delete"}
+        </Button>
+      ),
+    },
   ];
 
   return (
@@ -277,10 +340,10 @@ export default function ViewSessionPage() {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
                 <Button onClick={handleCollectRuns} disabled={collecting || capturing}>
-                  {collecting ? "Collecting…" : "Collect New Runs"}
+                  {collecting ? "Collecting…" : "Collect New Batch"}
                 </Button>
                 <Button onClick={handleNewRun} disabled={collecting || capturing}>
-                  {capturing ? "Scanning…" : "New Single Run"}
+                  {capturing ? "Scanning…" : "New Single Scan"}
                 </Button>
                 <Button onClick={handleDownloadAll}>Download All PDFs</Button>
                 {notice && (

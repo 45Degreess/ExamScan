@@ -21,3 +21,11 @@ export async function captureRun(sessionCode, pages = null) {
   });
   return res.json();
 }
+
+export async function deleteBooklet(sessionCode, bookletId) {
+  const res = await apiFetch(
+    `/sessions/${encodeURIComponent(sessionCode)}/booklets/${bookletId}`,
+    { method: "DELETE" },
+  );
+  return res.json();
+}
