@@ -210,6 +210,7 @@ export default function DebugPage() {
   const [result, setResult] = useState({ kind: "idle" });
   const [busy, setBusy] = useState(null); // null | "cover" | "outline" | "run"
   const [error, setError] = useState(null);
+  const [applyOverlay, setApplyOverlay] = useState(false);
 
   const resultRef = useRef(result);
   resultRef.current = result;
@@ -234,16 +235,16 @@ export default function DebugPage() {
     setError(null);
     try {
       if (action === "outline") {
-        const blob = await detectPreview(file);
+        const blob = await detectPreview(file, applyOverlay);
         setResult({ kind: "image", url: URL.createObjectURL(blob) });
       } else if (action === "mark") {
-        const data = await extractMark(file);
+        const data = await extractMark(file, applyOverlay);
         setResult({ kind: "mark", data });
       } else if (action === "booklet") {
-        const data = await extractBooklet(file);
+        const data = await extractBooklet(file, applyOverlay);
         setResult({ kind: "booklet", data });
       } else {
-        const data = await extractCover(file);
+        const data = await extractCover(file, applyOverlay);
         setResult({ kind: "cover", data });
       }
     } catch (err) {
@@ -426,6 +427,26 @@ export default function DebugPage() {
           {error}
         </div>
       )}
+
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: space.xs,
+          marginBottom: space.sm,
+          fontSize: 13,
+          color: palette.text,
+          userSelect: "none",
+          cursor: "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={applyOverlay}
+          onChange={(e) => setApplyOverlay(e.target.checked)}
+        />
+        Apply rig overlay
+      </label>
 
       <div style={{ display: "flex", gap: space.sm, flexWrap: "wrap" }}>
         <Button onClick={handleCreateRun} disabled={!!busy}>

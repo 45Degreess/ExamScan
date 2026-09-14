@@ -14,6 +14,37 @@ from detection import detect_document
 _MODEL_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".model_cache")
 
 
+def load_rig_overlay(path) -> np.ndarray:
+    """Load a BGRA rig-occlusion overlay from disk. Raises ValueError if the
+    file has no alpha channel."""
+    overlay = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if overlay is None or overlay.ndim != 3 or overlay.shape[2] != 4:
+        raise ValueError(f"Rig overlay at {path} must be a 4-channel BGRA PNG")
+    return overlay
+
+
+def apply_rig_overlay(image: np.ndarray, overlay_bgra: np.ndarray) -> np.ndarray:
+    """
+    Alpha-composite overlay_bgra (BGRA, uint8) on top of image (BGR, uint8),
+    hiding rig hardware under the overlay's opaque border while its
+    transparent hole lets the original image show through untouched.
+
+    Resizes overlay_bgra to image.shape[:2] first if dimensions differ
+    (alpha via INTER_NEAREST to keep the hole edge hard, BGR via
+    INTER_LINEAR).
+    """
+    if overlay_bgra.shape[:2] != image.shape[:2]:
+        h, w = image.shape[:2]
+        overlay_bgr = cv2.resize(overlay_bgra[:, :, :3], (w, h), interpolation=cv2.INTER_LINEAR)
+        overlay_a = cv2.resize(overlay_bgra[:, :, 3], (w, h), interpolation=cv2.INTER_NEAREST)
+    else:
+        overlay_bgr, overlay_a = overlay_bgra[:, :, :3], overlay_bgra[:, :, 3]
+
+    alpha = (overlay_a.astype(np.float32) / 255.0)[:, :, None]
+    blended = overlay_bgr.astype(np.float32) * alpha + image.astype(np.float32) * (1 - alpha)
+    return blended.astype(np.uint8)
+
+
 def enhance_scan(warped: np.ndarray) -> np.ndarray:
     """CLAHE contrast enhancement on the L channel — keeps full colour."""
     lab = cv2.cvtColor(warped, cv2.COLOR_BGR2LAB)

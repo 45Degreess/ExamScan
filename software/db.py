@@ -1001,6 +1001,24 @@ def list_completed_booklet_pdfs(session_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def list_confirmed_results(session_id: int) -> list[dict]:
+    """Every roster student who is expected and has a scanned booklet linked —
+    the set finalize_session just confirmed. `{student_id, emplid, mark,
+    pdf_path}` per row, feeds the post-confirmation PDF/CSV downloads."""
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT ss.id AS student_id, b.emplid, b.mark, b.pdf_path
+                FROM session_students ss
+                JOIN booklets b ON b.id = ss.booklet_id
+                WHERE ss.session_id = :sid AND ss.expected = TRUE AND ss.scanned = TRUE
+                ORDER BY b.emplid
+            """),
+            {"sid": session_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def get_booklet(session_id: int, booklet_id: int) -> dict | None:
     """A single booklet scoped to its session, or None."""
     with _engine.connect() as conn:

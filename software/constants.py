@@ -13,6 +13,12 @@ RUNS_API_BASE_URL = os.environ.get("RUNS_API_BASE_URL", "http://10.42.0.1:8000")
 A4_WIDTH  = 2480   # 210 mm at 300 DPI
 A4_HEIGHT = 3508   # 297 mm at 300 DPI
 
+# BGRA overlay composited onto raw Pi captures (before detect_document) to
+# hide rig hardware visible at the frame edges. Opaque border, transparent
+# hole over the page/background region. See apply_rig_overlay/load_rig_overlay
+# in processing.py.
+RIG_OVERLAY_PATH = os.path.join(os.path.dirname(__file__), "assets", "rig_overlay_v7.png")
+
 A3_WIDTH  = A4_WIDTH * 2   # 4960 px
 A3_HEIGHT = A4_HEIGHT      # 3508 px
 

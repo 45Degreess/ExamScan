@@ -146,6 +146,21 @@ export function sessionArchiveUrl(sessionCode) {
   return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/archive`;
 }
 
+// GET /sessions/{code}/confirmed/archive — real endpoint (software/routes.py).
+// A ZIP of the booklet PDF for every confirmed student (expected + scanned as
+// of now) — offered right after Review & Finalize confirms. Point window.open
+// at it, not apiFetch. 404 when nothing is confirmed.
+export function confirmedArchiveUrl(sessionCode) {
+  return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/confirmed/archive`;
+}
+
+// GET /sessions/{code}/confirmed/marks.csv — real endpoint (software/routes.py).
+// A CSV of `student_id,mark` for every confirmed student. Point window.open at
+// it, not apiFetch.
+export function confirmedMarksCsvUrl(sessionCode) {
+  return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/confirmed/marks.csv`;
+}
+
 // PATCH /sessions/{code}/booklets/{id} — real endpoint (software/routes.py).
 // Operator edit of a booklet's OCR fields; only the passed keys change.
 // Changing emplid re-links the class-list roster; changing the course code
@@ -186,9 +201,14 @@ export function piStreamUrl() {
 // POST /detect-preview — real endpoint (software/routes.py). Used by the Debug
 // page's "Outline Page Frame Only" button, which is a genuine existing backend
 // capability so it is wired for real rather than mocked.
-export async function detectPreview(file) {
+// applyOverlay: when true, composites the rig-occlusion overlay onto the
+// image before detection, and the returned preview is drawn on top of that
+// composited image (teal border visible) so the overlay's hole placement can
+// be visually verified.
+export async function detectPreview(file, applyOverlay = false) {
   const fd = new FormData();
   fd.append("file", file);
+  if (applyOverlay) fd.append("apply_rig_overlay_flag", "true");
   const res = await apiFetch("/detect-preview", { method: "POST", body: fd });
   return res.blob();
 }
@@ -199,9 +219,11 @@ export async function detectPreview(file) {
 //   confidences: {name: 0-1, Emplid_digits: number[]},
 //   scan_dimensions: {width, height}, regions_used: {name: [x,y,w,h]} }.
 // Used by the Debug page's "Scan Front Cover Only" button.
-export async function extractCover(file) {
+// applyOverlay: composites the rig-occlusion overlay before detection.
+export async function extractCover(file, applyOverlay = false) {
   const fd = new FormData();
   fd.append("file", file);
+  if (applyOverlay) fd.append("apply_rig_overlay_flag", "true");
   const res = await apiFetch("/extract-cover", { method: "POST", body: fd });
   return res.json();
 }
@@ -211,9 +233,11 @@ export async function extractCover(file) {
 // regions. Returns { mark, mark_confidence, candidates: [{value,
 // confidence, box, region_index, crop, selected}], regions_used,
 // scan_dimensions }. Used by the Debug page's "Scan Mark Regions" button.
-export async function extractMark(file) {
+// applyOverlay: composites the rig-occlusion overlay before detection.
+export async function extractMark(file, applyOverlay = false) {
   const fd = new FormData();
   fd.append("file", file);
+  if (applyOverlay) fd.append("apply_rig_overlay_flag", "true");
   const res = await apiFetch("/extract-mark", { method: "POST", body: fd });
   return res.json();
 }
@@ -224,9 +248,12 @@ export async function extractMark(file) {
 // per-image QR/detection status. Returns { source, num_images, images:
 // [{filename, qr_found, error}], cover_found, cover, mark } — "cover" and
 // "mark" are the same shapes /extract-cover and /extract-mark return.
-export async function extractBooklet(file) {
+// applyOverlay: composites the rig-occlusion overlay before detection, for
+// every image (zip pages or the single uploaded photo).
+export async function extractBooklet(file, applyOverlay = false) {
   const fd = new FormData();
   fd.append("file", file);
+  if (applyOverlay) fd.append("apply_rig_overlay_flag", "true");
   const res = await apiFetch("/extract-booklet", { method: "POST", body: fd });
   return res.json();
 }
