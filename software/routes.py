@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import re
+import secrets
 import shutil
 import tempfile
 import zipfile
@@ -175,6 +176,20 @@ def _resolve_mark(candidates: list[int], test_total: int | None) -> tuple[int | 
     if c2 is None or c2 == c1:
         return c1, False
     return c2, False
+
+
+def _emplid_is_usable(emplid: str) -> bool:
+    """True when OCR resolved every digit of the Emplid field (no blanks,
+    no unresolved '?' positions)."""
+    return bool(emplid) and emplid.isdigit()
+
+
+def _placeholder_emplid() -> str:
+    """Unique stand-in emplid for a booklet whose ID OCR failed, so it can
+    be saved (not dropped as a duplicate-blank collision against another
+    unreadable booklet) and picked up in the review queue for manual
+    correction rather than surfaced as a processing error."""
+    return f"UNVERIFIED-{secrets.token_hex(4).upper()}"
 
 
 def _process_exam_folder(
@@ -1509,6 +1524,10 @@ async def add_booklet(
 
         student_info = result["student_info"]
         emplid = student_info.get("Emplid", "")
+        confidence = result.get("confidence")
+        if not _emplid_is_usable(emplid):
+            emplid = _placeholder_emplid()
+            confidence = 0.0
         scanned_course = student_info.get("Course Code", "")
         verified = scanned_course.strip().upper() == session["course_code"].strip().upper()
         checksum = hashlib.sha256(
@@ -1530,7 +1549,7 @@ async def add_booklet(
                 verified,
                 result["num_pages"],
                 str(final_dir / "combined.pdf"),
-                result.get("confidence"),
+                confidence,
                 checksum,
                 mark=mark,
                 mark_confidence=result.get("mark_confidence"),
@@ -1626,6 +1645,10 @@ async def _process_collected_run(session: dict, booklet_id: int, run_id: str) ->
 
             student_info = result["student_info"]
             emplid = student_info.get("Emplid", "")
+            confidence = result.get("confidence")
+            if not _emplid_is_usable(emplid):
+                emplid = _placeholder_emplid()
+                confidence = 0.0
             scanned_course = student_info.get("Course Code", "")
             verified = (
                 scanned_course.strip().upper() == session["course_code"].strip().upper()
@@ -1649,7 +1672,7 @@ async def _process_collected_run(session: dict, booklet_id: int, run_id: str) ->
                         verified,
                         result["num_pages"],
                         str(final_dir / "combined.pdf"),
-                        result.get("confidence"),
+                        confidence,
                         checksum,
                         mark=mark,
                         mark_confidence=result.get("mark_confidence"),
