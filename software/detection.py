@@ -110,7 +110,7 @@ def detect_by_colour(image: np.ndarray) -> np.ndarray:
     """
     h, w = image.shape[:2]
 
-    max_dim = 1500
+    max_dim = 2000
     scale = min(max_dim / w, max_dim / h, 1.0)
     if scale < 1.0:
         small = cv2.resize(image, (int(w * scale), int(h * scale)),

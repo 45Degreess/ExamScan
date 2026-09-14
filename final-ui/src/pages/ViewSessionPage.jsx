@@ -20,11 +20,19 @@ const STATUS_LABEL = { complete: "Complete", processing: "Processing", error: "E
 function toRow(b) {
   // Confidence is only meaningful once OCR has run — leave processing/error
   // rows neutral rather than flagging them red before there's a score.
+  // Same 3-tier banding as ReviewSessionPage's confidenceCell: >=80% green,
+  // 50-80% yellow, <50% red.
   let confidence = "gray";
   if (b.status === "complete") {
-    const low =
-      b.confidence == null || b.confidence < 0.5 || b.course_code_verified === false;
-    confidence = low ? "red" : "green";
+    if (b.confidence == null || b.course_code_verified === false) {
+      confidence = "red";
+    } else if (b.confidence >= 0.8) {
+      confidence = "green";
+    } else if (b.confidence >= 0.5) {
+      confidence = "yellow";
+    } else {
+      confidence = "red";
+    }
   }
   return {
     id: b.run_id || `#${b.id}`,
@@ -281,7 +289,9 @@ export default function ViewSessionPage() {
               ? "No confidence score until the run finishes processing"
               : row.confidence === "red"
                 ? "Low OCR confidence or course-code mismatch — review this booklet"
-                : "OCR confidence OK"
+                : row.confidence === "yellow"
+                  ? "Moderate OCR confidence — worth a look"
+                  : "OCR confidence OK"
           }
         />
       ),
