@@ -519,6 +519,37 @@ def update_booklet_fields(
         }
 
 
+def delete_booklet(booklet_id: int) -> dict:
+    """
+    Permanently remove a booklet: unlinks any matched class-list roster row,
+    then deletes the `booklets` row. Raises BookletNotFoundError if the id
+    doesn't exist. Returns {"booklet_id", "session_id", "pdf_path"} so the
+    caller can remove the booklet's on-disk storage after the transaction
+    commits.
+    """
+    with _engine.begin() as conn:
+        cur = conn.execute(
+            text("SELECT session_id, student_id, pdf_path FROM booklets WHERE id = :bid"),
+            {"bid": booklet_id},
+        ).mappings().first()
+        if cur is None:
+            raise BookletNotFoundError(booklet_id)
+
+        if cur["student_id"] is not None:
+            conn.execute(
+                text("""
+                    UPDATE session_students
+                    SET scanned = FALSE, booklet_id = NULL, scanned_at = NULL
+                    WHERE id = :sid AND booklet_id = :bid
+                """),
+                {"sid": cur["student_id"], "bid": booklet_id},
+            )
+
+        conn.execute(text("DELETE FROM booklets WHERE id = :bid"), {"bid": booklet_id})
+
+    return {"booklet_id": booklet_id, "session_id": cur["session_id"], "pdf_path": cur["pdf_path"]}
+
+
 def get_imported_run_ids(session_id: int) -> set[str]:
     """run_ids already collected for this session that should NOT be collected
     again — every 'complete' one, plus 'processing' ones still within the

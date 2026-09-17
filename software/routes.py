@@ -1014,6 +1014,33 @@ async def edit_booklet(
     return JSONResponse({"session_code": session_code, **result})
 
 
+@router.delete("/sessions/{session_code}/booklets/{booklet_id}")
+async def delete_booklet(session_code: str, booklet_id: int):
+    """
+    Permanently remove a scanned booklet: DB row, roster link, and its
+    on-disk storage directory (combined PDF + page images). Any signed-in
+    operator may delete — no admin check, matching edit_booklet's convention.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    booklet = await run_in_threadpool(db.get_booklet, session["id"], booklet_id)
+    if booklet is None:
+        raise HTTPException(status_code=404, detail="Unknown booklet for this session.")
+
+    try:
+        result = await run_in_threadpool(db.delete_booklet, booklet_id)
+    except db.BookletNotFoundError:
+        raise HTTPException(status_code=404, detail="Unknown booklet.")
+
+    pdf_path = result.get("pdf_path")
+    if pdf_path:
+        shutil.rmtree(Path(pdf_path).parent, ignore_errors=True)
+
+    return JSONResponse({"session_code": session_code, "deleted": True, "booklet_id": booklet_id})
+
+
 def _build_session_zip(booklets: list[dict]) -> tuple[int, bytes]:
     """ZIP every existing booklet PDF, named `<emplid or id>.pdf` (emplid is
     unique per session; the regex just tames OCR-mangled values). Returns

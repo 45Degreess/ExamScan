@@ -4,13 +4,13 @@ import { palette, space, font } from "../theme.js";
 import Card from "../components/Card.jsx";
 import Button from "../components/Button.jsx";
 import StatusDot from "../components/StatusDot.jsx";
+import DataTable from "../components/DataTable.jsx";
 import { useSession } from "../context/SessionContext.jsx";
 import { listSessions } from "../api/sessions.js";
 
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { backendOnline, piOnline } = useSession();
-  const [selectedSessionId, setSelectedSessionId] = useState("");
   const [sessions, setSessions] = useState([]);
 
   useEffect(() => {
@@ -33,18 +33,21 @@ export default function DashboardPage() {
         <Card title="Session" style={{ flex: 1.4, minWidth: 260 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: space.md }}>
             <Button variant="primary" disabled={!backendOnline} onClick={() => navigate("/sessions/new")}>Start New Scanning Session</Button>
-            <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
-              <select
-                value={selectedSessionId}
-                onChange={(event) => setSelectedSessionId(event.target.value)}
-                disabled={!backendOnline || sessions.length === 0}
-                style={{ padding: "9px 12px", borderRadius: 6, border: `1px solid ${palette.borderStrong}`, fontFamily: font.body, fontSize: 13.5, color: palette.text, background: palette.surface }}
-              >
-                <option value="">{sessions.length === 0 ? "No previous sessions" : "Select a previous session…"}</option>
-                {sessions.map((session) => <option key={session.id} value={session.id}>{session.sessionCode} — {session.courseCode}</option>)}
-              </select>
-              <Button disabled={!backendOnline || !selectedSessionId} onClick={() => navigate(`/sessions/${selectedSessionId}`)}>View Session</Button>
-            </div>
+            <DataTable
+              maxHeight={400}
+              emptyText={backendOnline ? "No previous sessions" : "Connect to the backend to see previous sessions"}
+              columns={[
+                { key: "session", header: "Session", render: (session) => `${session.sessionCode} — ${session.courseCode}` },
+                {
+                  key: "date",
+                  header: "Date",
+                  render: (session) => (session.date ? new Date(session.date).toLocaleDateString() : "—"),
+                },
+              ]}
+              rows={sessions}
+              rowStyle={() => ({ cursor: "pointer" })}
+              onRowClick={(session) => navigate(`/sessions/${session.id}`)}
+            />
           </div>
         </Card>
         <Card title="Debug" style={{ flex: 1, minWidth: 220 }}>
