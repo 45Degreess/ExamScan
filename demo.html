@@ -98,6 +98,9 @@
             text-decoration: none;
         }
         button.secondary, a.secondary { background: #2a9d8f; }
+        button.capture-only { background: #457b9d; }
+        button.detection-test { background: #6a4c93; }
+        button.last-page { background: #e76f51; }
         button:hover:not(:disabled), a.button:hover { filter: brightness(0.9); }
         button:disabled { background: #555; cursor: default; }
         #meta { margin-left: auto; text-align: right; }
@@ -122,7 +125,10 @@
         </div>
     </div>
     <div id="controls">
+        <button id="captureBtn" class="capture-only" onclick="captureOnly()" disabled>Capture Image Only</button>
+        <button id="detectionTestBtn" class="detection-test" onclick="testHandDetection()" disabled title="Moves the mechanism without capturing an image">Test Hand Detection — Move Only</button>
         <button id="scanBtn" onclick="scanStep()" disabled>Scan Page</button>
+        <button id="lastPageBtn" class="last-page" onclick="scanLastPage()" disabled>Scan Last Page</button>
         <button id="autoBtn" class="secondary" onclick="autoScan()" disabled>Auto Scan</button>
         <button id="completeBtn" class="secondary" onclick="completeRun()" disabled>Finish Run</button>
         <a id="archiveLink" class="button secondary" hidden>Download Images (ZIP)</a>
@@ -135,6 +141,7 @@
         let runId = null;
         let busy = false;
         let scanAreaReady = false;
+        let handDetectionEnabled = false;
 
         document.addEventListener("keydown", (e) => {
             if (e.key === "Enter") scanStep();
@@ -167,7 +174,7 @@
         }
 
         function updateControls() {
-            for (const id of ["scanBtn", "autoBtn", "completeBtn"]) {
+            for (const id of ["captureBtn", "detectionTestBtn", "scanBtn", "lastPageBtn", "autoBtn", "completeBtn"]) {
                 document.getElementById(id).disabled = busy || !scanAreaReady;
             }
         }
@@ -279,6 +286,8 @@
                 const health = await response.json();
                 const detection = health.hand_detection || {};
                 updateVisionDiagnostics(detection);
+                handDetectionEnabled = detection.mode !== "disabled" &&
+                    detection.state !== "disabled";
                 scanAreaReady = detection.safe_to_move !== undefined
                     ? detection.safe_to_move === true
                     : health.hand_present === false;
@@ -291,6 +300,7 @@
                 }
             } catch (error) {
                 updateVisionDiagnostics({ debug_overlay: false });
+                handDetectionEnabled = false;
                 scanAreaReady = false;
                 updateControls();
                 showObstructionAlert({
@@ -334,7 +344,7 @@
             return runId;
         }
 
-        async function runAction(label, makeRequest) {
+        async function runAction(label, makeRequest, successMessage) {
             if (busy) return;
             setBusy(true, label);
             flash();
@@ -343,7 +353,9 @@
                 const data = await makeRequest(id);
                 updateCount(data.page_count);
                 showArchive(data.archive_url);
-                setStatus("Saved " + data.page_count + " page" + (data.page_count === 1 ? "" : "s"));
+                setStatus(successMessage
+                    ? successMessage(data)
+                    : "Saved " + data.page_count + " page" + (data.page_count === 1 ? "" : "s"));
                 if (data.status === "complete") runId = null;
             } catch (error) {
                 setStatus(error.message, error.busy ? "busy" : "error");
@@ -356,6 +368,40 @@
         function scanStep() {
             return runAction("Scanning page...", (id) =>
                 request(`/api/runs/${id}/scan-step`, { method: "POST" }));
+        }
+
+        function captureOnly() {
+            return runAction(
+                "Capturing image...",
+                (id) => request(`/api/runs/${id}/capture`, { method: "POST" }),
+                (data) => `Captured image (${data.page_count} page${data.page_count === 1 ? "" : "s"}); mechanism was not moved.`
+            );
+        }
+
+        async function testHandDetection() {
+            if (busy) return;
+            if (!handDetectionEnabled) {
+                setStatus("Hand detection is disabled; enable it and restart the backend before testing.", "error");
+                return;
+            }
+            setBusy(true, "Testing hand detection — mechanism moving...");
+            try {
+                const id = await ensureRun();
+                await request(`/api/runs/${id}/page-turn`, { method: "POST" });
+                setStatus("Hand-detection movement test finished; no image was captured.");
+            } catch (error) {
+                setStatus(error.message, error.busy ? "busy" : "error");
+            } finally {
+                setBusy(false);
+            }
+        }
+
+        function scanLastPage() {
+            return runAction(
+                "Scanning last page...",
+                (id) => request(`/api/runs/${id}/scan-last-page`, { method: "POST" }),
+                (data) => `Saved last page (${data.page_count} page${data.page_count === 1 ? "" : "s"}); finish the run when ready.`
+            );
         }
 
         function autoScan() {
