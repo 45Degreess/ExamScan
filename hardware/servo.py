@@ -59,10 +59,9 @@ class ServoMotor:
             "detach_after_move": detach_after_move,
             "pin_factory": pin_factory,
         }
-        # AngularServo's initial_angle defaults to 0.0, so that is where the
-        # shaft actually parks on construction. Tracked here rather than read
-        # back from the device because a detached servo reports angle None,
-        # which would lose the ramp's starting point after the first move.
+        # The mechanism is parked at 0 degrees before startup. Keep that known
+        # mechanical position for the first ramp, but do not energise the servo
+        # merely because the backend imported its hardware controllers.
         self._last_angle = 0.0
         self._hold_timer = None
         self._servo = servo_class(
@@ -72,6 +71,7 @@ class ServoMotor:
             min_pulse_width=min_pulse_width,
             max_pulse_width=max_pulse_width,
             frame_width=frame_width,
+            initial_angle=None,
             pin_factory=self._make_pin_factory(pin_factory),
         )
 

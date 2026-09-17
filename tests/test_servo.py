@@ -14,6 +14,7 @@ class FakeAngularServo:
         min_pulse_width,
         max_pulse_width,
         frame_width,
+        initial_angle=0.0,
         pin_factory=None,
     ):
         self.pin = pin
@@ -22,8 +23,9 @@ class FakeAngularServo:
         self.min_pulse_width = min_pulse_width
         self.max_pulse_width = max_pulse_width
         self.frame_width = frame_width
+        self.initial_angle = initial_angle
         self.pin_factory = pin_factory
-        self.angles = []
+        self.angles = [] if initial_angle is None else [initial_angle]
         self.detached = 0
         self.closed = False
         self.instances.append(self)
@@ -119,6 +121,8 @@ def test_servo_uses_angular_servo_settings(monkeypatch):
     assert device.min_pulse_width == 0.0005
     assert device.max_pulse_width == 0.0025
     assert device.frame_width == 0.02
+    assert device.initial_angle is None
+    assert device.angles == []
     assert device.pin_factory is None
 
     sleeps = []
