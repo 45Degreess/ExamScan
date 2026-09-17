@@ -37,10 +37,9 @@ default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = false
 invert_direction = false
-# Page-turn geometry: out page_turn_degrees, then shared_degrees alongside the
-# other motor, then home. The final return stops return_short_degrees short, so
-# set that to 0 for an exact round trip.
-page_turn_degrees = 90.0
+# Page-turn geometry. In motor2_only mode motor 1 returns exactly after motor 2
+# pre-positions. In shared rollback mode it also performs shared_degrees.
+page_turn_degrees = 115.0
 shared_degrees = 80.0
 return_short_degrees = 10.0
 
@@ -61,7 +60,7 @@ invert_direction = true
 page_turn_degrees = 90.0
 preposition_degrees = 60.0
 shared_degrees = 80.0
-return_short_degrees = 10.0
+return_short_degrees = 0.0
 
 [servos.page_drop]
 pin = 22
@@ -107,15 +106,15 @@ down_angle = 90
 up_angle = 0
 # Clamps seat at contact_angle then ease back to hold_angle and stay
 # powered there - holding hard against a stop stalls the servo.
-contact_angle = 88
-hold_angle = 85
+contact_angle = 85
+hold_angle = 82
 use_hold = true
 default_settle_time = 0.4
 detach_after_move = true
 pin_factory = "pigpio"
 
 [servos.page_clamp_big]
-pin = 19
+pin = 13
 min_angle = 0
 max_angle = 180
 min_pulse_width = 0.0005
@@ -143,7 +142,7 @@ detach_after_move = true
 pin_factory = "pigpio"
 
 [fan]
-pin = 13
+pin = 19
 frequency_hz = 25000
 min_start_duty_pct = 10
 tach_pin = 17
@@ -151,7 +150,7 @@ tach_pulses_per_rev = 2
 # Duty held during the page turn, and how long to let the fan reach speed
 # before the arm drops onto the page.
 duty_pct = 100
-spinup_seconds = 3.0
+spinup_seconds = 3
 
 [obstruction]
 enabled = true
@@ -187,5 +186,5 @@ stepper_pause = 1.0
 servo_up_pause = 1.0
 motor_pause = 1.0
 # Dwell on the small clamp's first drop, before the fan starts.
-small_clamp_hold_seconds = 5.0
+small_clamp_hold_seconds = 3.0
 default_pages = 7
