@@ -3,6 +3,7 @@ import threading
 import time
 import zipfile
 
+import pytest
 import tomli_w
 
 from server import ExamScanHandler, ExamScanServer
@@ -315,9 +316,10 @@ def test_page_turn_drives_every_device(api_client, api_server):
     # Arm down then up, never held.
     assert [i["degrees"] for i in api_server.servos.page_drop.angles] == [105, 45]
     assert all(not i["hold"] for i in api_server.servos.page_drop.angles)
-    # Motor 1 out, shared, shared back, home. Motor 2 out, shared, home.
-    assert len(api_server.stepper.moves) == 4
-    assert len(api_server.stepper2.moves) == 3
+    # Motor 1 goes out and straight home. Motor 2 pre-positions, finishes its
+    # first leg, continues alone, then returns.
+    assert len(api_server.stepper.moves) == 2
+    assert len(api_server.stepper2.moves) == 4
 
 
 def test_page_turn_runs_when_obstruction_detection_is_disabled(
@@ -331,6 +333,8 @@ def test_page_turn_runs_when_obstruction_detection_is_disabled(
     health = api_client.get("/api/health").json
 
     assert response.status == 200
+    assert len(api_server.stepper.moves) == 2
+    assert len(api_server.stepper2.moves) == 4
     assert health["hand_detection"]["state"] == "disabled"
     assert health["hand_detection"]["safe_to_move"] is True
 
@@ -371,35 +375,30 @@ def test_page_turn_keeps_motor_one_energised_until_it_goes_home(
     api_client.post(f"/api/runs/{run_id}/page-turn")
 
     held = [move["keep_enabled"] for move in api_server.stepper.moves]
-    assert held == [True, True, True, False]
+    assert held == [True, False]
     assert api_server.stepper.enabled is False
     # Motor 2 never holds anything.
     assert all(not move["keep_enabled"] for move in api_server.stepper2.moves)
 
 
-def test_page_turn_stops_short_of_home_by_the_configured_degrees(
+def test_motor_one_returns_exactly_while_motor_two_keeps_its_shortfall(
     api_client, api_server, config
 ):
-    """Each motor's final return deliberately undershoots.
-
-    Splitting in steps rather than degrees is what keeps the arithmetic exact;
-    return_short_degrees is then subtracted from the last move only.
-    """
+    """The early motor 1 return is exact; motor 2 retains its correction."""
     run_id = api_client.post("/api/runs").json["run_id"]
     api_client.post(f"/api/runs/{run_id}/page-turn")
 
     m1, m2 = config["motor"], config["motor2"]
-    short1 = round(m1["steps_per_rev"] * m1["return_short_degrees"] / 360)
     short2 = round(m2["steps_per_rev"] * m2["return_short_degrees"] / 360)
 
-    first, shared_out, shared_back, home = api_server.stepper.moves
-    assert home["steps"] == first["steps"] - short1
-    assert shared_out["steps"] == shared_back["steps"]
-    assert shared_back["clockwise"] is not shared_out["clockwise"]
+    first, home = api_server.stepper.moves
+    assert home["steps"] == first["steps"]
+    assert home["clockwise"] is not first["clockwise"]
 
-    m2_first, m2_shared, m2_home = api_server.stepper2.moves
-    assert m2_home["steps"] == m2_first["steps"] + m2_shared["steps"] - short2
-    assert m2_home["clockwise"] is not m2_first["clockwise"]
+    m2_preposition, m2_remainder, m2_shared, m2_home = api_server.stepper2.moves
+    m2_first = m2_preposition["steps"] + m2_remainder["steps"]
+    assert m2_home["steps"] == m2_first + m2_shared["steps"] - short2
+    assert m2_home["clockwise"] is not m2_preposition["clockwise"]
 
 
 def test_page_turn_returns_exactly_when_no_shortfall_is_configured(
@@ -412,16 +411,142 @@ def test_page_turn_returns_exactly_when_no_shortfall_is_configured(
     run_id = api_client.post("/api/runs").json["run_id"]
     api_client.post(f"/api/runs/{run_id}/page-turn")
 
-    first, shared_out, shared_back, home = api_server.stepper.moves
+    first, home = api_server.stepper.moves
     assert home["steps"] == first["steps"]
 
-    m2_first, m2_shared, m2_home = api_server.stepper2.moves
-    assert m2_home["steps"] == m2_first["steps"] + m2_shared["steps"]
+    m2_preposition, m2_remainder, m2_shared, m2_home = api_server.stepper2.moves
+    assert m2_home["steps"] == (
+        m2_preposition["steps"] + m2_remainder["steps"] + m2_shared["steps"]
+    )
+
+
+@pytest.mark.parametrize("preposition_degrees", [0.0, 45.0, 90.0])
+def test_motor_two_preposition_splits_the_first_leg_exactly(
+    api_client, api_server, preposition_degrees
+):
+    """The split changes timing, not total travel or return geometry."""
+    motor = api_server.config["motor2"]
+    motor["preposition_degrees"] = preposition_degrees
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    first = round(motor["steps_per_rev"] * motor["page_turn_degrees"] / 360)
+    preposition = round(motor["steps_per_rev"] * preposition_degrees / 360)
+    remainder = first - preposition
+    shared = round(motor["steps_per_rev"] * motor["shared_degrees"] / 360)
+    short = round(
+        motor["steps_per_rev"] * motor["return_short_degrees"] / 360
+    )
+    expected = [steps for steps in (preposition, remainder) if steps]
+    expected.extend([shared, first + shared - short])
+
+    assert [move["steps"] for move in api_server.stepper2.moves] == expected
+    assert sum(expected[: len(expected) - 2]) == first
+    assert all(
+        move["clockwise"] == motor["default_clockwise"]
+        for move in api_server.stepper2.moves[:-1]
+    )
+    assert api_server.stepper2.moves[-1]["clockwise"] != motor["default_clockwise"]
+
+
+def test_shared_sequence_remains_available_as_a_config_rollback(
+    api_client, api_server
+):
+    api_server.config["workflow"]["turn_sequence"] = "shared"
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    motor1 = api_server.config["motor"]
+    short = round(
+        motor1["steps_per_rev"] * motor1["return_short_degrees"] / 360
+    )
+    first, shared_out, shared_back, home = api_server.stepper.moves
+    assert response.status == 200
+    assert len(api_server.stepper2.moves) == 4
+    assert shared_out["steps"] == shared_back["steps"]
+    assert shared_out["clockwise"] is not shared_back["clockwise"]
+    assert home["steps"] == first["steps"] - short
+
+
+@pytest.mark.parametrize("mode", ["motor2_only", "shared"])
+def test_preposition_runs_before_arm_lift_while_the_fan_is_on(
+    api_client, api_server, mode
+):
+    events = []
+    api_server.config["workflow"]["turn_sequence"] = mode
+
+    original_m1_move = api_server.stepper.move_steps
+    original_m2_move = api_server.stepper2.move_steps
+    original_arm_move = api_server.servos.page_drop.set_angle
+    original_fan_duty = api_server.fan.set_duty
+
+    def m1_move(*args, **kwargs):
+        events.append("m1")
+        return original_m1_move(*args, **kwargs)
+
+    def m2_move(*args, **kwargs):
+        events.append(("m2", api_server.fan.duty_pct))
+        return original_m2_move(*args, **kwargs)
+
+    def arm_move(degrees, *args, **kwargs):
+        events.append(f"arm:{degrees}")
+        return original_arm_move(degrees, *args, **kwargs)
+
+    def fan_duty(percent):
+        events.append(f"fan:{percent}")
+        return original_fan_duty(percent)
+
+    api_server.stepper.move_steps = m1_move
+    api_server.stepper2.move_steps = m2_move
+    api_server.servos.page_drop.set_angle = arm_move
+    api_server.fan.set_duty = fan_duty
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    first_m1 = events.index("m1")
+    preposition = next(
+        index for index, event in enumerate(events)
+        if isinstance(event, tuple) and event[0] == "m2"
+    )
+    arm_up = events.index("arm:45")
+    fan_off = events.index("fan:0", arm_up)
+    motor2 = api_server.config["motor2"]
+    preposition_steps = round(
+        motor2["steps_per_rev"] * motor2["preposition_degrees"] / 360
+    )
+
+    assert response.status == 200
+    assert first_m1 < preposition < arm_up < fan_off
+    assert events[preposition] == ("m2", 100.0)
+    assert len(api_server._phases) == 16
+    assert sum(
+        move["requested"] == preposition_steps
+        and move["clockwise"] == motor2["default_clockwise"]
+        for move in api_server.stepper2.moves
+    ) == 1
+
+
+def test_motor_two_only_sequence_does_not_build_a_parallel_move(
+    api_client, api_server
+):
+    def unexpected_parallel(*args, **kwargs):
+        raise AssertionError("motor2_only must not use parallel movement")
+
+    api_server._parallel_move = unexpected_parallel
+    run_id = api_client.post("/api/runs").json["run_id"]
+
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    assert response.status == 200
 
 
 def test_page_turn_order_hands_the_page_between_the_clamps(api_client, api_server):
     """The page is never unclamped: each clamp grips before the other lets go."""
     order = []
+    api_server.config["workflow"]["motor_pause"] = 0.25
 
     def record(label, servo):
         def set_angle(
@@ -447,13 +572,36 @@ def test_page_turn_order_hands_the_page_between_the_clamps(api_client, api_serve
     api_server.stepper.move_steps = stepper_stub("m1")
     api_server.stepper2.move_steps = stepper_stub("m2")
 
+    original_fan_duty = api_server.fan.set_duty
+
+    def fan_duty(percent):
+        order.append(f"fan:{percent}")
+        return original_fan_duty(percent)
+
+    api_server.fan.set_duty = fan_duty
+
+    def paced(seconds):
+        def run(abort):
+            if seconds:
+                order.append(f"pause:{seconds}")
+            return True
+
+        return run
+
+    api_server._paced = paced
+
     run_id = api_client.post("/api/runs").json["run_id"]
     api_client.post(f"/api/runs/{run_id}/page-turn")
 
-    # Phase 12 drives both motors on their own threads, so the two entries can
-    # land either way round. Sorted in place rather than asserted in a fixed
-    # order, or this test would fail on scheduling luck alone.
-    order[12:14] = sorted(order[12:14])
+    preposition = order.index("m2:cw")
+    assert order[preposition:preposition + 7] == [
+        "m2:cw", "pause:0.25", "arm:45", "fan:0", "m1:ccw",
+        "pause:0.25", "small:88"
+    ]
+    order = [
+        event for event in order
+        if not event.startswith("pause:") and not event.startswith("fan:")
+    ]
 
     assert order == [
         "small:88", "small:85",      # [1] small clamp grips
@@ -461,15 +609,15 @@ def test_page_turn_order_hands_the_page_between_the_clamps(api_client, api_serve
         "big:105", "big:102",        # [4] big clamp takes over
         "small:0",                   # [5] small clamp releases
         "m1:cw",                     # [6] motor 1 out, still energised
-        "arm:45",                    # [7] arm clear
-        "small:88", "small:85",      # [9] small clamp grips again
-        "big:0",                     # [10] big clamp releases
-        "m2:cw",                     # [11] motor 2 out
-        "m1:cw", "m2:cw",            # [12] both together, either order
-        "m2:ccw",                    # [13] motor 2 home
-        "m1:ccw",                    # [14] motor 1 unwinds the shared leg
-        "small:0",                   # [15] small clamp off
-        "m1:ccw",                    # [16] motor 1 home
+        "m2:cw",                     # [7] motor 2 pre-position
+        "arm:45",                    # [8] arm clear
+        "m1:ccw",                    # [10] motor 1 returns exactly
+        "small:88", "small:85",      # [11] small clamp grips again
+        "big:0",                     # [12] big clamp releases
+        "m2:cw",                     # [13] motor 2 out remainder
+        "m2:cw",                     # [14] motor 2 continues alone
+        "m2:ccw",                    # [15] motor 2 home
+        "small:0",                   # [16] small clamp off
     ]
 
 
@@ -485,6 +633,7 @@ def test_page_turn_surfaces_a_failure_from_the_parallel_move(
     def boom(*args, **kwargs):
         raise RuntimeError("motor 2 stalled")
 
+    api_server.config["workflow"]["turn_sequence"] = "shared"
     api_server.stepper2.move_steps = boom
 
     run_id = api_client.post("/api/runs").json["run_id"]
@@ -563,7 +712,7 @@ def test_page_turn_pauses_and_resumes_when_the_hand_clears(api_client, api_serve
     response = api_client.post(f"/api/runs/{run_id}/page-turn")
 
     assert response.status == 200
-    assert len(api_server.stepper.moves) == 4
+    assert len(api_server.stepper.moves) == 2
     assert api_server.obstruction.waits >= 1
 
 
@@ -627,6 +776,106 @@ def test_an_interrupted_turn_moves_exactly_as_far_as_an_uninterrupted_one(
     ]
     assert partial, "expected a move to be cut off mid-run"
     assert turn_totals(api_server) == clean
+
+
+@pytest.mark.parametrize("target_move", [1, 2, 3])
+def test_each_motor_two_outward_move_resumes_without_duplicate_steps(
+    api_client, api_server, target_move
+):
+    """A hand can interrupt either split half without replaying completed steps."""
+    run_id = api_client.post("/api/runs").json["run_id"]
+    original_move = api_server.stepper2.move_steps
+    call_count = 0
+
+    def interrupt_selected_move(
+        steps, clockwise=True, step_delay=None, keep_enabled=False, abort_check=None
+    ):
+        nonlocal call_count
+        call_count += 1
+        selected = call_count == target_move
+        checks = 0
+
+        def trigger_hand():
+            nonlocal checks
+            checks += 1
+            if selected and checks == 3:
+                api_server.obstruction.hand_present = True
+                api_server.obstruction.clear_after_polls = (
+                    api_server.obstruction.polls + 3
+                )
+            return abort_check()
+
+        return original_move(
+            steps,
+            clockwise=clockwise,
+            step_delay=step_delay,
+            keep_enabled=keep_enabled,
+            abort_check=trigger_hand,
+        )
+
+    api_server.stepper2.move_steps = interrupt_selected_move
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    motor = api_server.config["motor2"]
+    first = round(motor["steps_per_rev"] * motor["page_turn_degrees"] / 360)
+    shared = round(motor["steps_per_rev"] * motor["shared_degrees"] / 360)
+    short = round(
+        motor["steps_per_rev"] * motor["return_short_degrees"] / 360
+    )
+    expected_net = (
+        first + shared - (first + shared - short)
+        if motor["default_clockwise"]
+        else -(first + shared) + (first + shared - short)
+    )
+
+    assert response.status == 200
+    assert any(
+        move["steps"] != move["requested"] for move in api_server.stepper2.moves
+    )
+    assert turn_totals(api_server)[1] == expected_net
+
+
+def test_motor_one_early_return_resumes_without_duplicate_steps(
+    api_client, api_server
+):
+    run_id = api_client.post("/api/runs").json["run_id"]
+    original_move = api_server.stepper.move_steps
+    call_count = 0
+
+    def interrupt_return(
+        steps, clockwise=True, step_delay=None, keep_enabled=False, abort_check=None
+    ):
+        nonlocal call_count
+        call_count += 1
+        returning = call_count == 2
+        checks = 0
+
+        def trigger_hand():
+            nonlocal checks
+            checks += 1
+            if returning and checks == 3:
+                api_server.obstruction.hand_present = True
+                api_server.obstruction.clear_after_polls = (
+                    api_server.obstruction.polls + 3
+                )
+            return abort_check()
+
+        return original_move(
+            steps,
+            clockwise=clockwise,
+            step_delay=step_delay,
+            keep_enabled=keep_enabled,
+            abort_check=trigger_hand,
+        )
+
+    api_server.stepper.move_steps = interrupt_return
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+
+    assert response.status == 200
+    assert any(
+        move["steps"] != move["requested"] for move in api_server.stepper.moves
+    )
+    assert turn_totals(api_server)[0] == 0
 
 
 def test_a_turn_that_never_clears_stops_and_reports_where(api_client, api_server):

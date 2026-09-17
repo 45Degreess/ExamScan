@@ -1,13 +1,14 @@
 """Run the full page-turn sequence: two clamps, the arm, the fan, two steppers.
 
     small clamp down (hold 5s) -> fan on -> arm down -> big clamp down (hold)
-      -> small clamp up -> motor 1 out (stays energised) -> arm up -> fan off
-      -> small clamp down (hold) -> big clamp up -> motor 2 out
-      -> both motors out together -> motor 2 home -> motor 1 back
-      -> small clamp up -> motor 1 home
+      -> small clamp up -> motor 1 out (stays energised) -> motor 2 pre-position
+      -> arm up -> fan off -> motor 1 home -> small clamp down (hold)
+      -> big clamp up -> motor 2 out remainder -> motor 2 continues alone
+      -> motor 2 home -> small clamp up
 
 Motor 1 stays energised from its first move onwards so it holds position while
-the clamps work around it. Both wheels end where they started.
+the clamps work around it. Set TURN_SEQUENCE to "shared" to exercise the
+previous parallel-movement sequence instead.
 
 The angles are hardcoded here on purpose. config.toml supplies only each servo's
 pin and pulse widths, so you can tune the angles by editing this file and
@@ -81,12 +82,14 @@ CLAMP_SETTLE = 0.4
 CLAMP_USE_HOLD = True
 
 # --- the stepper wheels ---
-# Motor 1 goes out 90, then another 80 alongside motor 2, then unwinds both -
-# so it ends where it started and cannot creep round over repeated turns.
-# Motor 2 goes out 90, another 80, then straight home in one 170 move.
-M1_FIRST_DEGREES = 120
+# Keep this in step with workflow.turn_sequence in config.toml. "motor2_only"
+# returns motor 1 early and makes motor 2 perform the continuation alone;
+# "shared" is the previous sequence and is kept as a rollback.
+TURN_SEQUENCE = "motor2_only"
+M1_FIRST_DEGREES = 105
 M2_FIRST_DEGREES = 90
-SHARED_DEGREES = 80          # both motors move this far, together
+M2_PREPOSITION_DEGREES = 60
+SHARED_DEGREES = 80
 M1_CLOCKWISE = False         # outward direction; returns are the opposite
 M2_CLOCKWISE = False
 # Each motor's final return stops this far short of where it started. Set to 0
@@ -245,9 +248,20 @@ def main() -> int:
     m1_first = round(motor1_config["steps_per_rev"] * M1_FIRST_DEGREES / 360)
     m1_shared = round(motor1_config["steps_per_rev"] * SHARED_DEGREES / 360)
     m2_first = round(motor2_config["steps_per_rev"] * M2_FIRST_DEGREES / 360)
+    m2_preposition = round(
+        motor2_config["steps_per_rev"] * M2_PREPOSITION_DEGREES / 360
+    )
+    m2_first_remainder = m2_first - m2_preposition
     m2_shared = round(motor2_config["steps_per_rev"] * SHARED_DEGREES / 360)
     # Motor 2 unwinds both of its outward moves in one go.
     m2_return = m2_first + m2_shared
+    if TURN_SEQUENCE not in {"motor2_only", "shared"}:
+        print("TURN_SEQUENCE must be 'motor2_only' or 'shared'", file=sys.stderr)
+        return 2
+    if not 0 <= M2_PREPOSITION_DEGREES <= M2_FIRST_DEGREES:
+        print("M2_PREPOSITION_DEGREES must be between 0 and "
+              "M2_FIRST_DEGREES", file=sys.stderr)
+        return 2
     if min(m1_first, m1_shared, m2_first, m2_shared) < 1:
         print("A configured rotation is too small to make a single step",
               file=sys.stderr)
@@ -284,17 +298,28 @@ def main() -> int:
     print(f"Motor 1:     step {motor1_config['step_pin']}, "
           f"dir {motor1_config['dir_pin']}, "
           f"enable {motor1_config['enable_pin']}")
-    print(f"             {M1_FIRST_DEGREES} + {SHARED_DEGREES} deg {m1_out} "
-          f"= {m1_first} + {m1_shared} steps, then back")
+    if TURN_SEQUENCE == "motor2_only":
+        print(f"             {M1_FIRST_DEGREES} deg {m1_out} = {m1_first} "
+              "steps, then exact return after motor 2 pre-positions")
+    else:
+        print(f"             {M1_FIRST_DEGREES} + {SHARED_DEGREES} deg "
+              f"{m1_out} = {m1_first} + {m1_shared} steps, then back")
     print(f"Motor 2:     step {motor2_config['step_pin']}, "
           f"dir {motor2_config['dir_pin']}, "
           f"enable {motor2_config['enable_pin']}")
-    print(f"             {M2_FIRST_DEGREES} + {SHARED_DEGREES} deg {m2_out} "
-          f"= {m2_first} + {m2_shared} steps, home in {m2_home}")
+    print(f"             {M2_PREPOSITION_DEGREES} + "
+          f"{M2_FIRST_DEGREES - M2_PREPOSITION_DEGREES} + {SHARED_DEGREES} "
+          f"deg {m2_out} = {m2_preposition} + {m2_first_remainder} + "
+          f"{m2_shared} steps, home in {m2_home}")
     if RETURN_SHORT_DEGREES:
-        print(f"Both motors stop {RETURN_SHORT_DEGREES} deg short on their "
-              f"final return (motor 1 {m1_home} not {m1_first} steps, "
-              f"motor 2 {m2_home} not {m2_return})")
+        if TURN_SEQUENCE == "motor2_only":
+            print(f"Motor 1 returns exactly; motor 2 stops "
+                  f"{RETURN_SHORT_DEGREES} deg short ({m2_home} not "
+                  f"{m2_return} steps)")
+        else:
+            print(f"Both motors stop {RETURN_SHORT_DEGREES} deg short on "
+                  f"their final return (motor 1 {m1_home} not {m1_first} "
+                  f"steps, motor 2 {m2_home} not {m2_return})")
     print(f"\nStarting in {START_DELAY}s...")
     time.sleep(START_DELAY)
 
@@ -355,60 +380,121 @@ def main() -> int:
         motor1.enable()
         time.sleep(PAUSE_AFTER_STEPPER)
 
-        print(f"[7/16] Lifting arm to {UP_ANGLE} degrees")
+        print(f"[7/16] Motor 2 pre-position {m2_preposition} steps {m2_out}")
+        if m2_preposition:
+            motor2.move_steps(m2_preposition, clockwise=M2_CLOCKWISE)
+            time.sleep(PAUSE_AFTER_STEPPER)
+
+        print(f"[8/16] Lifting arm to {UP_ANGLE} degrees")
         servo.set_angle(UP_ANGLE, settle_time=SERVO_SETTLE)
         servo.detach()
         time.sleep(PAUSE_AFTER_LIFT)
 
-        print("[8/16] Fan off")
+        print("[9/16] Fan off")
         fan.set_duty(0)
 
-        print(f"[9/16] Dropping small clamp to {SMALL_CLAMP_CONTACT_ANGLE} "
-              f"degrees, holding at {SMALL_CLAMP_HOLD_ANGLE}")
-        small_held = hold_clamp(small, SMALL_CLAMP_CONTACT_ANGLE,
-                                SMALL_CLAMP_HOLD_ANGLE, SMALL_CLAMP_SETTLE,
-                                SMALL_CLAMP_USE_HOLD)
-        time.sleep(PAUSE_AFTER_CLAMP_DOWN)
+        if TURN_SEQUENCE == "motor2_only":
 
-        print(f"[10/16] Lifting big clamp to {CLAMP_UP_ANGLE} degrees")
-        lift_clamp(clamp, CLAMP_UP_ANGLE, CLAMP_SETTLE, clamp_held, CLAMP_NAME)
-        time.sleep(PAUSE_AFTER_CLAMP_UP)
+            print(f"[10/16] Motor 1 exact return, {m1_first} steps {m1_back}")
+            motor1.move_steps(m1_first, clockwise=not M1_CLOCKWISE)
+            time.sleep(PAUSE_AFTER_STEPPER)
 
-        print(f"[11/16] Motor 2 {m2_first} steps {m2_out}")
-        motor2.move_steps(m2_first, clockwise=M2_CLOCKWISE)
-        time.sleep(PAUSE_AFTER_STEPPER)
+            print(f"[11/16] Dropping small clamp to "
+                  f"{SMALL_CLAMP_CONTACT_ANGLE} degrees, holding at "
+                  f"{SMALL_CLAMP_HOLD_ANGLE}")
+            small_held = hold_clamp(
+                small, SMALL_CLAMP_CONTACT_ANGLE, SMALL_CLAMP_HOLD_ANGLE,
+                SMALL_CLAMP_SETTLE, SMALL_CLAMP_USE_HOLD
+            )
+            time.sleep(PAUSE_AFTER_CLAMP_DOWN)
 
-        print(f"[12/16] Motor 1 {m1_shared} steps {m1_out} and motor 2 "
-              f"{m2_shared} steps {m2_out}, together")
-        move_both(motor1, m1_shared, M1_CLOCKWISE,
-                  motor2, m2_shared, M2_CLOCKWISE)
-        motor1.enable()
-        time.sleep(PAUSE_AFTER_STEPPER)
+            print(f"[12/16] Lifting big clamp to {CLAMP_UP_ANGLE} degrees")
+            lift_clamp(
+                clamp, CLAMP_UP_ANGLE, CLAMP_SETTLE, clamp_held, CLAMP_NAME
+            )
+            time.sleep(PAUSE_AFTER_CLAMP_UP)
 
-        print(f"[13/16] Motor 2 home, {m2_home} steps {m2_back}")
-        motor2.move_steps(m2_home, clockwise=not M2_CLOCKWISE)
-        time.sleep(PAUSE_AFTER_STEPPER)
+            print(f"[13/16] Motor 2 first-leg remainder "
+                  f"{m2_first_remainder} steps {m2_out}")
+            if m2_first_remainder:
+                motor2.move_steps(m2_first_remainder, clockwise=M2_CLOCKWISE)
+                time.sleep(PAUSE_AFTER_STEPPER)
 
-        print(f"[14/16] Motor 1 back {m1_shared} steps {m1_back}")
-        motor1.move_steps(m1_shared, clockwise=not M1_CLOCKWISE)
-        motor1.enable()
-        time.sleep(PAUSE_AFTER_STEPPER)
+            print(f"[14/16] Motor 2 continuation {m2_shared} steps {m2_out}")
+            motor2.move_steps(m2_shared, clockwise=M2_CLOCKWISE)
+            time.sleep(PAUSE_AFTER_STEPPER)
 
-        print(f"[15/16] Lifting small clamp to {SMALL_CLAMP_UP_ANGLE} degrees")
-        lift_clamp(small, SMALL_CLAMP_UP_ANGLE, SMALL_CLAMP_SETTLE,
-                   small_held, SMALL_CLAMP_NAME)
-        time.sleep(PAUSE_AFTER_CLAMP_UP)
+            print(f"[15/16] Motor 2 home, {m2_home} steps {m2_back}")
+            motor2.move_steps(m2_home, clockwise=not M2_CLOCKWISE)
+            time.sleep(PAUSE_AFTER_STEPPER)
 
-        print(f"[16/16] Motor 1 home, {m1_home} steps {m1_back}")
-        motor1.move_steps(m1_home, clockwise=not M1_CLOCKWISE)
+            print(f"[16/16] Lifting small clamp to "
+                  f"{SMALL_CLAMP_UP_ANGLE} degrees")
+            lift_clamp(
+                small, SMALL_CLAMP_UP_ANGLE, SMALL_CLAMP_SETTLE,
+                small_held, SMALL_CLAMP_NAME
+            )
+            time.sleep(PAUSE_AFTER_CLAMP_UP)
+        else:
+            print(f"[10/16] Dropping small clamp to {SMALL_CLAMP_CONTACT_ANGLE} "
+                  f"degrees, holding at {SMALL_CLAMP_HOLD_ANGLE}")
+            small_held = hold_clamp(
+                small, SMALL_CLAMP_CONTACT_ANGLE, SMALL_CLAMP_HOLD_ANGLE,
+                SMALL_CLAMP_SETTLE, SMALL_CLAMP_USE_HOLD
+            )
+            time.sleep(PAUSE_AFTER_CLAMP_DOWN)
+
+            print(f"[11/16] Lifting big clamp to {CLAMP_UP_ANGLE} degrees")
+            lift_clamp(
+                clamp, CLAMP_UP_ANGLE, CLAMP_SETTLE, clamp_held, CLAMP_NAME
+            )
+            time.sleep(PAUSE_AFTER_CLAMP_UP)
+
+            print(f"[12/16] Motor 2 first-leg remainder "
+                  f"{m2_first_remainder} steps {m2_out}")
+            if m2_first_remainder:
+                motor2.move_steps(m2_first_remainder, clockwise=M2_CLOCKWISE)
+                time.sleep(PAUSE_AFTER_STEPPER)
+
+            print(f"[13/16] Motor 1 {m1_shared} steps {m1_out} and motor 2 "
+                  f"{m2_shared} steps {m2_out}, together")
+            move_both(
+                motor1, m1_shared, M1_CLOCKWISE,
+                motor2, m2_shared, M2_CLOCKWISE
+            )
+            motor1.enable()
+            time.sleep(PAUSE_AFTER_STEPPER)
+
+            print(f"[14/16] Motor 2 home, {m2_home} steps {m2_back}")
+            motor2.move_steps(m2_home, clockwise=not M2_CLOCKWISE)
+            time.sleep(PAUSE_AFTER_STEPPER)
+
+            print(f"[15/16] Motor 1 back {m1_shared} steps {m1_back}")
+            motor1.move_steps(m1_shared, clockwise=not M1_CLOCKWISE)
+            motor1.enable()
+            time.sleep(PAUSE_AFTER_STEPPER)
+
+            print(f"        Lifting small clamp to "
+                  f"{SMALL_CLAMP_UP_ANGLE} degrees")
+            lift_clamp(
+                small, SMALL_CLAMP_UP_ANGLE, SMALL_CLAMP_SETTLE,
+                small_held, SMALL_CLAMP_NAME
+            )
+            time.sleep(PAUSE_AFTER_CLAMP_UP)
+
+            print(f"[16/16] Motor 1 home, {m1_home} steps {m1_back}")
+            motor1.move_steps(m1_home, clockwise=not M1_CLOCKWISE)
 
         if RETURN_SHORT_DEGREES:
-            print(f"\nWorkflow finished - both wheels stopped "
-                  f"{RETURN_SHORT_DEGREES} deg short of their starting "
-                  f"positions.")
+            if TURN_SEQUENCE == "motor2_only":
+                print(f"\nWorkflow finished - motor 1 returned exactly and "
+                      f"motor 2 stopped {RETURN_SHORT_DEGREES} deg short.")
+            else:
+                print(f"\nWorkflow finished - both wheels stopped "
+                      f"{RETURN_SHORT_DEGREES} deg short of their starting "
+                      "positions.")
         else:
-            print("\nWorkflow finished - both wheels back at their starting "
-                  "positions.")
+            print("\nWorkflow finished - both wheels returned exactly.")
         return 0
     finally:
         # Order matters: StepperMotor.cleanup() resets RPi.GPIO channels, so the

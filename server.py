@@ -636,8 +636,9 @@ class ExamScanServer(ThreadingHTTPServer):
         interrupted move rather than repeating it, or every interrupted page
         would turn the wheel further than it should.
 
-        The wheels do NOT end where they started: each motor's final return
-        stops return_short_degrees short. Set it to 0 for an exact round trip.
+        In motor2_only mode, motor 1 returns exactly after motor 2 pre-positions
+        and motor 2 finishes the turn alone. The shared rollback mode retains
+        the original parallel leg and configured return shortfalls.
         """
         arm_config = self.config["servos"]["page_drop"]
         big_config = self.config["servos"]["page_clamp_big"]
@@ -657,6 +658,10 @@ class ExamScanServer(ThreadingHTTPServer):
         m1_first = self._steps_for(m1_config, m1_config["page_turn_degrees"])
         m1_shared = self._steps_for(m1_config, m1_config["shared_degrees"])
         m2_first = self._steps_for(m2_config, m2_config["page_turn_degrees"])
+        m2_preposition = self._steps_for(
+            m2_config, m2_config["preposition_degrees"]
+        )
+        m2_first_remainder = m2_first - m2_preposition
         m2_shared = self._steps_for(m2_config, m2_config["shared_degrees"])
         m2_return = m2_first + m2_shared
         m1_home = m1_first - self._steps_for(m1_config, m1_config["return_short_degrees"])
@@ -670,7 +675,28 @@ class ExamScanServer(ThreadingHTTPServer):
         self._fan_duty = 0
         self._paused_phase = None
 
-        self._phases = [
+        preposition_steps = []
+        if m2_preposition:
+            preposition_steps.extend([
+                self._stepper_move(self.stepper2, m2_preposition, m2_cw),
+                self._paced(pace),
+            ])
+        phase11_steps = []
+        if m2_first_remainder:
+            phase11_steps.extend([
+                self._stepper_move(self.stepper2, m2_first_remainder, m2_cw),
+                self._paced(pace),
+            ])
+
+        second_small_clamp = self._seat_and_hold(small, small_config) + [
+            self._paced(workflow["clamp_down_pause"])
+        ]
+        big_clamp_up = [
+            self._servo_move(big, big_config["up_angle"], big_config),
+            self._paced(workflow["clamp_up_pause"]),
+        ]
+
+        common_phases = [
             ("small clamp down", self._seat_and_hold(small, small_config)
                 + [self._paced(workflow["small_clamp_hold_seconds"])]),
             ("fan up to speed", [self._fan(fan_config["duty_pct"]),
@@ -683,29 +709,84 @@ class ExamScanServer(ThreadingHTTPServer):
                                 self._paced(workflow["clamp_up_pause"])]),
             ("motor 1 out", [self._stepper_move(self.stepper, m1_first, m1_cw, keep_enabled=True),
                              self._paced(pace)]),
+            ("motor 2 pre-position", preposition_steps),
             ("arm up", [self._servo_move(arm, arm_config["up_angle"], arm_config),
                         self._paced(workflow["servo_up_pause"])]),
             ("fan off", [self._fan(0)]),
-            ("small clamp down again", self._seat_and_hold(small, small_config)
-                + [self._paced(workflow["clamp_down_pause"])]),
-            ("big clamp up", [self._servo_move(big, big_config["up_angle"], big_config),
-                              self._paced(workflow["clamp_up_pause"])]),
-            ("motor 2 out", [self._stepper_move(self.stepper2, m2_first, m2_cw),
-                             self._paced(pace)]),
-            ("both wheels together", [
-                self._parallel_move(
-                    self._stepper_move(self.stepper, m1_shared, m1_cw, keep_enabled=True),
-                    self._stepper_move(self.stepper2, m2_shared, m2_cw),
-                ),
-                self._paced(pace)]),
-            ("motor 2 home", [self._stepper_move(self.stepper2, m2_home, not m2_cw),
-                              self._paced(pace)]),
-            ("motor 1 back", [self._stepper_move(self.stepper, m1_shared, not m1_cw, keep_enabled=True),
-                              self._paced(pace)]),
-            ("small clamp off", [self._servo_move(small, small_config["up_angle"], small_config),
-                                 self._paced(workflow["clamp_up_pause"])]),
-            ("motor 1 home", [self._stepper_move(self.stepper, m1_home, not m1_cw)]),
         ]
+
+        if workflow["turn_sequence"] == "motor2_only":
+            motor1_home_phase = ("motor 1 home", [
+                self._stepper_move(self.stepper, m1_first, not m1_cw),
+                self._paced(pace),
+            ])
+            second_small_phase = (
+                "small clamp down again", second_small_clamp
+            )
+            motor2_only_forward = [
+                ("motor 2 out remainder", phase11_steps),
+                ("motor 2 continuation", [
+                    self._stepper_move(self.stepper2, m2_shared, m2_cw),
+                    self._paced(pace),
+                ]),
+            ]
+            motor2_only_return = [
+                ("motor 2 home", [
+                    self._stepper_move(self.stepper2, m2_home, not m2_cw),
+                    self._paced(pace),
+                ]),
+                ("small clamp off", [
+                    self._servo_move(small, small_config["up_angle"], small_config),
+                    self._paced(workflow["clamp_up_pause"]),
+                ]),
+            ]
+            self._phases = (
+                common_phases
+                + [motor1_home_phase, second_small_phase]
+                + [("big clamp up", big_clamp_up)]
+                + motor2_only_forward
+                + motor2_only_return
+            )
+        else:
+            shared_before_release = [
+                ("small clamp down again", second_small_clamp),
+            ]
+            shared_forward = [
+                ("motor 2 out remainder", phase11_steps),
+                ("both wheels together", [
+                    self._parallel_move(
+                        self._stepper_move(
+                            self.stepper, m1_shared, m1_cw, keep_enabled=True
+                        ),
+                        self._stepper_move(self.stepper2, m2_shared, m2_cw),
+                    ),
+                    self._paced(pace),
+                ]),
+            ]
+            shared_return = [
+                ("motor 2 home", [
+                    self._stepper_move(self.stepper2, m2_home, not m2_cw),
+                    self._paced(pace),
+                ]),
+                ("motor 1 back and small clamp off", [
+                    self._stepper_move(
+                        self.stepper, m1_shared, not m1_cw, keep_enabled=True
+                    ),
+                    self._paced(pace),
+                    self._servo_move(small, small_config["up_angle"], small_config),
+                    self._paced(workflow["clamp_up_pause"]),
+                ]),
+                ("motor 1 home", [
+                    self._stepper_move(self.stepper, m1_home, not m1_cw)
+                ]),
+            ]
+            self._phases = (
+                common_phases
+                + shared_before_release
+                + [("big clamp up", big_clamp_up)]
+                + shared_forward
+                + shared_return
+            )
 
         # Every phase helper expects a callable. With detection disabled the
         # factory supplies no monitor, so use a callback that never aborts
