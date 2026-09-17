@@ -297,6 +297,132 @@ def test_auto_scan_without_body_uses_configured_default(api_client, api_server):
     assert completed.json["page_count"] == 2
 
 
+def test_scan_last_page_captures_once_and_leaves_the_run_open(api_client):
+    run_id = api_client.post("/api/runs").json["run_id"]
+
+    scanned = api_client.post(f"/api/runs/{run_id}/scan-last-page")
+
+    assert scanned.status == 200
+    assert scanned.json["status"] == "open"
+    assert scanned.json["page_count"] == 1
+    assert scanned.json["pages"][0]["filename"] == "page_001.jpg"
+    assert scanned.json["archive_url"] == f"/api/runs/{run_id}/archive"
+
+
+@pytest.mark.parametrize("mode", ["motor2_only", "shared"])
+def test_scan_last_page_releases_big_clamp_after_all_motor_motion(
+    api_client, api_server, mode
+):
+    """The special turn holds the big clamp through every forward leg."""
+    events = []
+    api_server.config["workflow"]["turn_sequence"] = mode
+
+    def record_motor(label, motor, outward_clockwise):
+        original = motor.move_steps
+
+        def move(
+            steps, clockwise=True, step_delay=None, keep_enabled=False,
+            abort_check=None
+        ):
+            direction = "forward" if clockwise == outward_clockwise else "return"
+            events.append((label, direction, steps))
+            return original(
+                steps,
+                clockwise=clockwise,
+                step_delay=step_delay,
+                keep_enabled=keep_enabled,
+                abort_check=abort_check,
+            )
+
+        motor.move_steps = move
+
+    record_motor(
+        "m1", api_server.stepper,
+        api_server.config["motor"]["default_clockwise"]
+    )
+    record_motor(
+        "m2", api_server.stepper2,
+        api_server.config["motor2"]["default_clockwise"]
+    )
+
+    big = api_server.servos.page_clamp_big
+    original_big_move = big.set_angle
+
+    def big_move(degrees, *args, **kwargs):
+        events.append(("big", degrees, kwargs.get("hold", False)))
+        return original_big_move(degrees, *args, **kwargs)
+
+    big.set_angle = big_move
+
+    run_id = api_client.post("/api/runs").json["run_id"]
+    response = api_client.post(f"/api/runs/{run_id}/scan-last-page")
+
+    big_config = api_server.config["servos"]["page_clamp_big"]
+    big_up = events.index(("big", big_config["up_angle"], False))
+    forward = [
+        index for index, event in enumerate(events)
+        if event[0] in {"m1", "m2"} and event[1] == "forward"
+    ]
+    returns = [
+        index for index, event in enumerate(events)
+        if event[0] in {"m1", "m2"} and event[1] == "return"
+    ]
+    refresh = ("big", big_config["hold_angle"], True)
+
+    assert response.status == 200
+    assert max(forward) < big_up < min(returns)
+    assert events.count(refresh) == 2  # initial hold plus one timer refresh
+    assert len(api_server._phases) == 16
+
+
+def test_scan_last_page_preserves_motor_distances(api_client, api_server):
+    api_server.config["workflow"]["turn_sequence"] = "shared"
+    run_id = api_client.post("/api/runs").json["run_id"]
+
+    response = api_client.post(f"/api/runs/{run_id}/scan-last-page")
+
+    m1, m2 = api_server.config["motor"], api_server.config["motor2"]
+    m1_first = round(m1["steps_per_rev"] * m1["page_turn_degrees"] / 360)
+    m1_shared = round(m1["steps_per_rev"] * m1["shared_degrees"] / 360)
+    m1_home = m1_first - round(
+        m1["steps_per_rev"] * m1["return_short_degrees"] / 360
+    )
+    m2_first = round(m2["steps_per_rev"] * m2["page_turn_degrees"] / 360)
+    m2_preposition = round(
+        m2["steps_per_rev"] * m2["preposition_degrees"] / 360
+    )
+    m2_shared = round(m2["steps_per_rev"] * m2["shared_degrees"] / 360)
+    m2_home = m2_first + m2_shared - round(
+        m2["steps_per_rev"] * m2["return_short_degrees"] / 360
+    )
+
+    assert response.status == 200
+    assert [move["requested"] for move in api_server.stepper.moves] == [
+        m1_first, m1_shared, m1_shared, m1_home
+    ]
+    assert [move["requested"] for move in api_server.stepper2.moves] == [
+        m2_preposition, m2_first - m2_preposition, m2_shared, m2_home
+    ]
+
+
+def test_scan_last_page_records_turn_failure_after_capture(api_client, api_server):
+    def boom(delay_big_clamp_release=False):
+        assert delay_big_clamp_release is True
+        raise RuntimeError("last-page mechanism jammed")
+
+    api_server.page_turn = boom
+    run_id = api_client.post("/api/runs").json["run_id"]
+
+    failed = api_client.post(f"/api/runs/{run_id}/scan-last-page")
+    manifest = api_client.get(f"/api/runs/{run_id}").json
+
+    assert failed.status == 500
+    assert manifest["status"] == "open"
+    assert manifest["page_count"] == 1
+    assert manifest["errors"][-1]["operation"] == "page-turn"
+    assert manifest["errors"][-1]["message"] == "last-page mechanism jammed"
+
+
 def test_page_turn_drives_every_device(api_client, api_server):
     run_id = api_client.post("/api/runs").json["run_id"]
 

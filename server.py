@@ -101,6 +101,8 @@ class ExamScanHandler(BaseHTTPRequestHandler):
                 self._handle_page_turn(run_id)
             elif action == "scan-step":
                 self._handle_scan_step(run_id)
+            elif action == "scan-last-page":
+                self._handle_scan_last_page(run_id)
             elif action == "auto-scan":
                 self._handle_auto_scan(run_id)
             elif action == "complete":
@@ -142,6 +144,10 @@ class ExamScanHandler(BaseHTTPRequestHandler):
 
     def _handle_scan_step(self, run_id):
         manifest = self.server.scan_step_locked(run_id)
+        self._send_json(200, self._run_response(manifest))
+
+    def _handle_scan_last_page(self, run_id):
+        manifest = self.server.scan_last_page_locked(run_id)
         self._send_json(200, self._run_response(manifest))
 
     def _handle_auto_scan(self, run_id):
@@ -389,6 +395,9 @@ class ExamScanServer(ThreadingHTTPServer):
     def scan_step_locked(self, run_id):
         return self.run_locked("scan-step", self.scan_step, run_id)
 
+    def scan_last_page_locked(self, run_id):
+        return self.run_locked("scan-last-page", self.scan_last_page, run_id)
+
     def auto_scan_locked(self, run_id, pages):
         return self.run_locked("auto-scan", self.auto_scan, run_id, pages)
 
@@ -418,9 +427,9 @@ class ExamScanServer(ThreadingHTTPServer):
             raise
         return self.run_manager.add_page(run_id, image_path)
 
-    def _page_turn_for(self, run_id):
+    def _page_turn_for(self, run_id, delay_big_clamp_release=False):
         try:
-            self.page_turn()
+            self.page_turn(delay_big_clamp_release=delay_big_clamp_release)
         except Exception as exc:
             self._record_failure(run_id, "page-turn", exc)
             raise
@@ -536,6 +545,23 @@ class ExamScanServer(ThreadingHTTPServer):
             ),
         ]
 
+    def _refresh_hold(self, servo, servo_config):
+        """Restart a clamp's hold cut-off without changing its setpoint."""
+        def run(abort):
+            if not servo_config["use_hold"]:
+                return True
+            reached = servo.set_angle(
+                servo_config["hold_angle"],
+                settle_time=0,
+                hold=True,
+                abort_check=abort,
+            )
+            if reached:
+                self._held[servo] = (servo_config["hold_angle"], servo_config)
+            return reached
+
+        return run
+
     def _fan(self, percent):
         def run(abort):
             self.fan.set_duty(percent)
@@ -627,7 +653,7 @@ class ExamScanServer(ThreadingHTTPServer):
                     pass
             self._held.clear()
 
-    def page_turn(self):
+    def page_turn(self, delay_big_clamp_release=False):
         """The sixteen-phase page turn, guarded throughout.
 
         A hand appearing at any point stops the mechanism where it stands - mid
@@ -638,7 +664,9 @@ class ExamScanServer(ThreadingHTTPServer):
 
         In motor2_only mode, motor 1 returns exactly after motor 2 pre-positions
         and motor 2 finishes the turn alone. The shared rollback mode retains
-        the original parallel leg and configured return shortfalls.
+        the original parallel leg and configured return shortfalls. A last-page
+        turn delays the big-clamp release until every forward motor leg has
+        completed, without changing any motor movement.
         """
         arm_config = self.config["servos"]["page_drop"]
         big_config = self.config["servos"]["page_clamp_big"]
@@ -688,9 +716,16 @@ class ExamScanServer(ThreadingHTTPServer):
                 self._paced(pace),
             ])
 
-        second_small_clamp = self._seat_and_hold(small, small_config) + [
-            self._paced(workflow["clamp_down_pause"])
-        ]
+        second_small_clamp = []
+        if delay_big_clamp_release:
+            # The delayed release extends the active hold. Reissue the same
+            # setpoint before the remaining motor legs so the servo's safety
+            # timer cannot let the clamp go limp early.
+            second_small_clamp.append(self._refresh_hold(big, big_config))
+        second_small_clamp.extend(
+            self._seat_and_hold(small, small_config)
+            + [self._paced(workflow["clamp_down_pause"])]
+        )
         big_clamp_up = [
             self._servo_move(big, big_config["up_angle"], big_config),
             self._paced(workflow["clamp_up_pause"]),
@@ -723,6 +758,9 @@ class ExamScanServer(ThreadingHTTPServer):
             second_small_phase = (
                 "small clamp down again", second_small_clamp
             )
+            motor2_only_before_release = [
+                second_small_phase,
+            ]
             motor2_only_forward = [
                 ("motor 2 out remainder", phase11_steps),
                 ("motor 2 continuation", [
@@ -740,13 +778,23 @@ class ExamScanServer(ThreadingHTTPServer):
                     self._paced(workflow["clamp_up_pause"]),
                 ]),
             ]
-            self._phases = (
-                common_phases
-                + [motor1_home_phase, second_small_phase]
-                + [("big clamp up", big_clamp_up)]
-                + motor2_only_forward
-                + motor2_only_return
-            )
+            if delay_big_clamp_release:
+                self._phases = (
+                    common_phases
+                    + motor2_only_before_release
+                    + motor2_only_forward
+                    + [("big clamp up", big_clamp_up)]
+                    + [motor1_home_phase]
+                    + motor2_only_return
+                )
+            else:
+                self._phases = (
+                    common_phases
+                    + [motor1_home_phase, second_small_phase]
+                    + [("big clamp up", big_clamp_up)]
+                    + motor2_only_forward
+                    + motor2_only_return
+                )
         else:
             shared_before_release = [
                 ("small clamp down again", second_small_clamp),
@@ -780,13 +828,22 @@ class ExamScanServer(ThreadingHTTPServer):
                     self._stepper_move(self.stepper, m1_home, not m1_cw)
                 ]),
             ]
-            self._phases = (
-                common_phases
-                + shared_before_release
-                + [("big clamp up", big_clamp_up)]
-                + shared_forward
-                + shared_return
-            )
+            if delay_big_clamp_release:
+                self._phases = (
+                    common_phases
+                    + shared_before_release
+                    + shared_forward
+                    + [("big clamp up", big_clamp_up)]
+                    + shared_return
+                )
+            else:
+                self._phases = (
+                    common_phases
+                    + shared_before_release
+                    + [("big clamp up", big_clamp_up)]
+                    + shared_forward
+                    + shared_return
+                )
 
         # Every phase helper expects a callable. With detection disabled the
         # factory supplies no monitor, so use a callback that never aborts
@@ -810,6 +867,11 @@ class ExamScanServer(ThreadingHTTPServer):
     def scan_step(self, run_id):
         manifest = self.capture_page(run_id)
         self._page_turn_for(run_id)
+        return manifest
+
+    def scan_last_page(self, run_id):
+        manifest = self.capture_page(run_id)
+        self._page_turn_for(run_id, delay_big_clamp_release=True)
         return manifest
 
     def auto_scan(self, run_id, pages=None):
