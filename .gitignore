@@ -19,6 +19,7 @@ hardware/find_focus.py
 # Scanner runtime output and calibration scratch
 runs/
 focus_tests/
+test-results/
 software/demo_output/
 software/storage/
 
