@@ -20,11 +20,19 @@ const STATUS_LABEL = { complete: "Complete", processing: "Processing", error: "E
 function toRow(b) {
   // Confidence is only meaningful once OCR has run — leave processing/error
   // rows neutral rather than flagging them red before there's a score.
+  // Same 3-tier banding as ReviewSessionPage's confidenceCell: >=80% green,
+  // 50-80% yellow, <50% red.
   let confidence = "gray";
   if (b.status === "complete") {
-    const low =
-      b.confidence == null || b.confidence < 0.5 || b.course_code_verified === false;
-    confidence = low ? "red" : "green";
+    if (b.confidence == null || b.course_code_verified === false) {
+      confidence = "red";
+    } else if (b.confidence >= 0.8) {
+      confidence = "green";
+    } else if (b.confidence >= 0.5) {
+      confidence = "yellow";
+    } else {
+      confidence = "red";
+    }
   }
   return {
     id: b.run_id || `#${b.id}`,
@@ -38,6 +46,9 @@ function toRow(b) {
     courseCode: b.course_code_scanned || "",
     pageCount: b.num_pages ?? "",
     createdAt: b.created_at || null,
+    mark: b.mark ?? null,
+    markConfidence: b.mark_confidence ?? null,
+    markNeedsReview: !!b.mark_needs_review,
   };
 }
 
@@ -187,6 +198,7 @@ export default function ViewSessionPage() {
       emplid: row.emplid,
       courseCodeScanned: row.courseCode,
       numPages: row.pageCount === "" ? null : row.pageCount,
+      mark: row.mark,
     });
   };
 
@@ -277,10 +289,34 @@ export default function ViewSessionPage() {
               ? "No confidence score until the run finishes processing"
               : row.confidence === "red"
                 ? "Low OCR confidence or course-code mismatch — review this booklet"
-                : "OCR confidence OK"
+                : row.confidence === "yellow"
+                  ? "Moderate OCR confidence — worth a look"
+                  : "OCR confidence OK"
           }
         />
       ),
+    },
+    {
+      key: "mark",
+      header: "Mark",
+      render: (row) => {
+        if (row.markNeedsReview) {
+          return <StatusDot status="red" label="Review" title="Extracted candidates didn't match the test total — edit this booklet to confirm the mark." />;
+        }
+        return row.mark != null ? (
+          <span
+            title={
+              row.markConfidence != null
+                ? `OCR confidence: ${Math.round(row.markConfidence * 100)}%`
+                : "Manually entered"
+            }
+          >
+            {row.mark}
+          </span>
+        ) : (
+          <span style={{ color: palette.neutral }}>—</span>
+        );
+      },
     },
     {
       key: "delete",
@@ -324,33 +360,20 @@ export default function ViewSessionPage() {
             <CameraFeed />
           </Card>
 
-          {/* Bottom-left: buttons, toggling to the booklet-edit form */}
+          {/* Bottom-left: action buttons */}
           <Card style={{ flex: 1, minHeight: 180 }}>
-            {editBooklet ? (
-              <BookletEditForm
-                sessionCode={sessionCodeRef.current}
-                booklet={editBooklet}
-                onSaved={() => {
-                  setEditBooklet(null);
-                  setNotice("Booklet updated.");
-                  refreshRuns();
-                }}
-                onCancel={() => setEditBooklet(null)}
-              />
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
-                <Button onClick={handleCollectRuns} disabled={collecting || capturing}>
-                  {collecting ? "Collecting…" : "Collect New Batch"}
-                </Button>
-                <Button onClick={handleNewRun} disabled={collecting || capturing}>
-                  {capturing ? "Scanning…" : "New Single Scan"}
-                </Button>
-                <Button onClick={handleDownloadAll}>Download All PDFs</Button>
-                {notice && (
-                  <div style={{ fontSize: 12, color: palette.textMuted, marginTop: space.xs }}>{notice}</div>
-                )}
-              </div>
-            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
+              <Button onClick={handleCollectRuns} disabled={collecting || capturing}>
+                {collecting ? "Collecting…" : "Collect New Batch"}
+              </Button>
+              <Button onClick={handleNewRun} disabled={collecting || capturing}>
+                {capturing ? "Scanning…" : "New Single Scan"}
+              </Button>
+              <Button onClick={handleDownloadAll}>Download All PDFs</Button>
+              {notice && (
+                <div style={{ fontSize: 12, color: palette.textMuted, marginTop: space.xs }}>{notice}</div>
+              )}
+            </div>
           </Card>
         </div>
 
@@ -374,6 +397,21 @@ export default function ViewSessionPage() {
           <DataTable columns={columns} rows={runs} emptyText="No runs collected yet." />
         </Card>
       </div>
+
+      {editBooklet && (
+        <Card style={{ marginTop: space.lg }} title="Edit booklet">
+          <BookletEditForm
+            sessionCode={sessionCodeRef.current}
+            booklet={editBooklet}
+            onSaved={() => {
+              setEditBooklet(null);
+              setNotice("Booklet updated.");
+              refreshRuns();
+            }}
+            onCancel={() => setEditBooklet(null)}
+          />
+        </Card>
+      )}
     </div>
   );
 }

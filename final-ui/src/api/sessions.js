@@ -33,12 +33,13 @@ export async function checkPiHealth() {
 // `classListFile` (optional) is the class-list CSV (Name, Pronouns, UserName,
 // Email, Role, LastAccessed). The backend keeps only Role=Student rows and
 // seeds the session_students roster from them.
-export async function createSession({ sessionCode, operatorName, testDate, courseCode, classListFile }) {
+export async function createSession({ sessionCode, operatorName, testDate, courseCode, testTotal, classListFile }) {
   const fd = new FormData();
   fd.append("session_code", sessionCode);
   fd.append("operator_name", operatorName);
   fd.append("test_date", testDate); // expects YYYY-MM-DD
   fd.append("course_code", courseCode);
+  fd.append("test_total", String(testTotal));
   if (classListFile) fd.append("class_list", classListFile);
   const res = await apiFetch("/sessions", { method: "POST", body: fd });
   return res.json();
@@ -74,6 +75,15 @@ export async function listSessions() {
 export async function getSession(sessionId) {
   const res = await apiFetch(`/sessions/${encodeURIComponent(sessionId)}`);
   return toSession(await res.json());
+}
+
+// DELETE /sessions/{code} — real endpoint (software/routes.py). Permanently
+// removes the session, its booklets/roster rows, and its storage folder.
+export async function deleteSession(sessionCode) {
+  const res = await apiFetch(`/sessions/${encodeURIComponent(sessionCode)}`, {
+    method: "DELETE",
+  });
+  return res.json();
 }
 
 // GET /sessions/{code}/students — real endpoint (software/routes.py).
@@ -136,20 +146,47 @@ export function sessionArchiveUrl(sessionCode) {
   return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/archive`;
 }
 
+// GET /sessions/{code}/confirmed/archive — real endpoint (software/routes.py).
+// A ZIP of the booklet PDF for every confirmed student (expected + scanned as
+// of now) — offered right after Review & Finalize confirms. Point window.open
+// at it, not apiFetch. 404 when nothing is confirmed.
+export function confirmedArchiveUrl(sessionCode) {
+  return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/confirmed/archive`;
+}
+
+// GET /sessions/{code}/confirmed/marks.csv — real endpoint (software/routes.py).
+// A CSV of `student_id,mark` for every confirmed student. Point window.open at
+// it, not apiFetch.
+export function confirmedMarksCsvUrl(sessionCode) {
+  return `${API_BASE}/sessions/${encodeURIComponent(sessionCode)}/confirmed/marks.csv`;
+}
+
 // PATCH /sessions/{code}/booklets/{id} — real endpoint (software/routes.py).
 // Operator edit of a booklet's OCR fields; only the passed keys change.
 // Changing emplid re-links the class-list roster; changing the course code
 // recomputes course_code_verified. Returns the updated
 // { emplid, course_code_scanned, num_pages, course_code_verified, student_id }.
 // Throws on 409 (emplid already used in this session) or 404.
-export async function updateBooklet(sessionCode, bookletId, { emplid, courseCodeScanned, numPages }) {
+export async function updateBooklet(sessionCode, bookletId, { emplid, courseCodeScanned, numPages, mark }) {
   const fd = new FormData();
   if (emplid != null) fd.append("emplid", emplid);
   if (courseCodeScanned != null) fd.append("course_code_scanned", courseCodeScanned);
   if (numPages != null && numPages !== "") fd.append("num_pages", String(numPages));
+  if (mark != null && mark !== "") fd.append("mark", String(mark));
   const res = await apiFetch(
     `/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}`,
     { method: "PATCH", body: fd },
+  );
+  return res.json();
+}
+
+// GET /sessions/{code}/booklets/{id}/crops — real endpoint (software/routes.py).
+// Field/mark crop images captured at scan time, fetched on demand when the
+// booklet edit form opens. Returns { emplid_crop, course_code_crop,
+// mark_crop_1, mark_crop_2 (base64 PNG, no data-URI prefix), mark_candidates }.
+export async function getBookletCrops(sessionCode, bookletId) {
+  const res = await apiFetch(
+    `/sessions/${encodeURIComponent(sessionCode)}/booklets/${encodeURIComponent(bookletId)}/crops`,
   );
   return res.json();
 }
@@ -164,9 +201,14 @@ export function piStreamUrl() {
 // POST /detect-preview — real endpoint (software/routes.py). Used by the Debug
 // page's "Outline Page Frame Only" button, which is a genuine existing backend
 // capability so it is wired for real rather than mocked.
-export async function detectPreview(file) {
+// applyOverlay: when true, composites the rig-occlusion overlay onto the
+// image before detection, and the returned preview is drawn on top of that
+// composited image (teal border visible) so the overlay's hole placement can
+// be visually verified.
+export async function detectPreview(file, applyOverlay = false) {
   const fd = new FormData();
   fd.append("file", file);
+  if (applyOverlay) fd.append("apply_rig_overlay_flag", "true");
   const res = await apiFetch("/detect-preview", { method: "POST", body: fd });
   return res.blob();
 }
@@ -177,10 +219,42 @@ export async function detectPreview(file) {
 //   confidences: {name: 0-1, Emplid_digits: number[]},
 //   scan_dimensions: {width, height}, regions_used: {name: [x,y,w,h]} }.
 // Used by the Debug page's "Scan Front Cover Only" button.
-export async function extractCover(file) {
+// applyOverlay: composites the rig-occlusion overlay before detection.
+export async function extractCover(file, applyOverlay = false) {
   const fd = new FormData();
   fd.append("file", file);
+  if (applyOverlay) fd.append("apply_rig_overlay_flag", "true");
   const res = await apiFetch("/extract-cover", { method: "POST", body: fd });
+  return res.json();
+}
+
+// POST /extract-mark — real endpoint (software/routes.py). Scans a cover
+// photo and runs handwritten red-pen mark extraction on both MARK_FIELDS
+// regions. Returns { mark, mark_confidence, candidates: [{value,
+// confidence, box, region_index, crop, selected}], regions_used,
+// scan_dimensions }. Used by the Debug page's "Scan Mark Regions" button.
+// applyOverlay: composites the rig-occlusion overlay before detection.
+export async function extractMark(file, applyOverlay = false) {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (applyOverlay) fd.append("apply_rig_overlay_flag", "true");
+  const res = await apiFetch("/extract-mark", { method: "POST", body: fd });
+  return res.json();
+}
+
+// POST /extract-booklet — real endpoint (software/routes.py). Upload a .zip
+// of booklet page photos or a single cover photo; runs the real cover-field
+// and mark extraction against whichever cover page is found, reporting
+// per-image QR/detection status. Returns { source, num_images, images:
+// [{filename, qr_found, error}], cover_found, cover, mark } — "cover" and
+// "mark" are the same shapes /extract-cover and /extract-mark return.
+// applyOverlay: composites the rig-occlusion overlay before detection, for
+// every image (zip pages or the single uploaded photo).
+export async function extractBooklet(file, applyOverlay = false) {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (applyOverlay) fd.append("apply_rig_overlay_flag", "true");
+  const res = await apiFetch("/extract-booklet", { method: "POST", body: fd });
   return res.json();
 }
 

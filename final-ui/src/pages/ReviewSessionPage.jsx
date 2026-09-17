@@ -8,7 +8,14 @@ import StatusDot from "../components/StatusDot.jsx";
 import { TextInput } from "../components/FormField.jsx";
 import BookletEditForm from "../components/BookletEditForm.jsx";
 import { useSession } from "../context/SessionContext.jsx";
-import { getSessionReview, finalizeSession, bookletPdfUrl } from "../api/sessions.js";
+import {
+  getSessionReview,
+  finalizeSession,
+  bookletPdfUrl,
+  confirmedArchiveUrl,
+  confirmedMarksCsvUrl,
+} from "../api/sessions.js";
+import { deleteBooklet } from "../api/runs.js";
 
 // Post-processing / review step. Sits after View Session. Pulls the merged
 // review feed (roster rows + stray scanned booklets), ordered
@@ -59,6 +66,8 @@ export default function ReviewSessionPage() {
   const [submitting, setSubmitting] = useState(false);
   const [confirmArmed, setConfirmArmed] = useState(false);
   const [editRow, setEditRow] = useState(null);
+  const [finalizeDone, setFinalizeDone] = useState(false);
+  const [removingId, setRemovingId] = useState(null);
 
   // Fetch (or re-fetch) the review feed for a session code. Re-run after a
   // booklet edit so a re-linked stray booklet moves groups immediately.
@@ -131,6 +140,27 @@ export default function ReviewSessionPage() {
     });
   };
 
+  const flaggedCount = useMemo(
+    () => items.filter((it) => it.status === "unexpected").length,
+    [items],
+  );
+
+  const handleRemove = async (row) => {
+    if (!window.confirm(`Remove this flagged script (${row.emplid || row.name})? This cannot be undone.`)) {
+      return;
+    }
+    setRemovingId(row.id);
+    setError(null);
+    try {
+      await deleteBooklet(session.sessionCode, row.booklet_id);
+      await reloadReview(session.sessionCode);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
   const handleFinalize = async () => {
     setSubmitting(true);
     setError(null);
@@ -139,7 +169,7 @@ export default function ReviewSessionPage() {
         .filter((it) => it.username && !selected.has(it.id))
         .map((it) => it.username);
       await finalizeSession(session.sessionCode, excluded);
-      navigate("/home");
+      setFinalizeDone(true);
     } catch (e) {
       setError(e.message);
       setSubmitting(false);
@@ -196,6 +226,23 @@ export default function ReviewSessionPage() {
             onClick={() => setEditRow(row)}
           >
             Edit
+          </Button>
+        ) : (
+          <span style={{ color: palette.neutral }}>—</span>
+        ),
+    },
+    {
+      key: "remove",
+      header: "",
+      render: (row) =>
+        row.status === "unexpected" ? (
+          <Button
+            variant="danger"
+            style={{ padding: "4px 12px" }}
+            disabled={removingId === row.id}
+            onClick={() => handleRemove(row)}
+          >
+            {removingId === row.id ? "Removing…" : "Remove"}
           </Button>
         ) : (
           <span style={{ color: palette.neutral }}>—</span>
@@ -275,6 +322,12 @@ export default function ReviewSessionPage() {
               This session is already finalized. You can still adjust selections and re-confirm.
             </p>
           )}
+          {flaggedCount > 0 && (
+            <p style={{ fontSize: 13, color: palette.danger, margin: "4px 0 0" }}>
+              {flaggedCount} flagged script{flaggedCount === 1 ? "" : "s"} must be assigned
+              (Edit) or removed before you can finalize.
+            </p>
+          )}
         </div>
         <div style={{ display: "flex", gap: space.sm }}>
           <Button
@@ -286,7 +339,8 @@ export default function ReviewSessionPage() {
           </Button>
           <Button
             variant={confirmArmed ? "danger" : "primary"}
-            disabled={loading || submitting}
+            disabled={loading || submitting || flaggedCount > 0}
+            title={flaggedCount > 0 ? "Resolve all flagged scripts before finalizing." : undefined}
             onClick={confirmArmed ? handleFinalize : () => setConfirmArmed(true)}
           >
             {submitting
@@ -357,6 +411,51 @@ export default function ReviewSessionPage() {
                 }}
                 onCancel={() => setEditRow(null)}
               />
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {finalizeDone && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: space.lg,
+            zIndex: 50,
+          }}
+        >
+          <div style={{ width: "100%", maxWidth: 420 }}>
+            <Card title="Session confirmed">
+              <p style={{ fontSize: 13, color: palette.textMuted, margin: "0 0 16px" }}>
+                Download the confirmed students' booklet PDFs and/or a CSV of
+                their marks now, or skip this and come back later.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: space.sm }}>
+                <Button
+                  variant="default"
+                  onClick={() =>
+                    window.open(confirmedArchiveUrl(session.sessionCode), "_blank")
+                  }
+                >
+                  Download PDFs (.zip)
+                </Button>
+                <Button
+                  variant="default"
+                  onClick={() =>
+                    window.open(confirmedMarksCsvUrl(session.sessionCode), "_blank")
+                  }
+                >
+                  Download marks (.csv)
+                </Button>
+                <Button variant="primary" onClick={() => navigate("/home")}>
+                  Done
+                </Button>
+              </div>
             </Card>
           </div>
         </div>

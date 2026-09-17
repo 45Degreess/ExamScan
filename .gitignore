@@ -23,8 +23,17 @@ test-results/
 software/demo_output/
 software/storage/
 
+# Batch-eval script inputs/outputs (real exam-script images)
+software/scripts/Batch_1/
+software/scripts/Batch_2/
+software/batch_eval_results/
+
 # Local MySQL credentials (copy from software/.env.example)
 software/.env
+
+# Manual-testing auth artifacts from software/Makefile (session cookie + CSRF token)
+software/.cookies.txt
+software/.csrf_token
 
 # Local backups taken before editing
 *.bak

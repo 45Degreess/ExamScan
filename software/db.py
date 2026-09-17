@@ -51,6 +51,10 @@ class BookletNotFoundError(Exception):
     """Raised when a booklet id doesn't exist."""
 
 
+class SessionNotFoundError(Exception):
+    """Raised when a session_code doesn't exist."""
+
+
 _UNSET = object()  # "field not supplied" sentinel for partial updates
 
 
@@ -140,6 +144,22 @@ def init_db() -> None:
                             "ALTER TABLE booklets ADD COLUMN error_message VARCHAR(512) NULL")
         _add_col_if_missing(conn, "booklets", "checksum",
                             "ALTER TABLE booklets ADD COLUMN checksum VARCHAR(64) NULL")
+        _add_col_if_missing(conn, "booklets", "mark",
+                            "ALTER TABLE booklets ADD COLUMN mark INT NULL")
+        _add_col_if_missing(conn, "booklets", "mark_confidence",
+                            "ALTER TABLE booklets ADD COLUMN mark_confidence FLOAT NULL")
+        _add_col_if_missing(conn, "booklets", "mark_candidates",
+                            "ALTER TABLE booklets ADD COLUMN mark_candidates VARCHAR(64) NULL")
+        _add_col_if_missing(conn, "booklets", "mark_needs_review",
+                            "ALTER TABLE booklets ADD COLUMN mark_needs_review BOOLEAN NOT NULL DEFAULT FALSE")
+        _add_col_if_missing(conn, "booklets", "emplid_crop",
+                            "ALTER TABLE booklets ADD COLUMN emplid_crop TEXT NULL")
+        _add_col_if_missing(conn, "booklets", "course_code_crop",
+                            "ALTER TABLE booklets ADD COLUMN course_code_crop TEXT NULL")
+        _add_col_if_missing(conn, "booklets", "mark_crop_1",
+                            "ALTER TABLE booklets ADD COLUMN mark_crop_1 TEXT NULL")
+        _add_col_if_missing(conn, "booklets", "mark_crop_2",
+                            "ALTER TABLE booklets ADD COLUMN mark_crop_2 TEXT NULL")
         if not conn.execute(text("""
             SELECT COUNT(*) FROM information_schema.statistics
             WHERE table_schema = DATABASE()
@@ -158,21 +178,26 @@ def init_db() -> None:
                             "ALTER TABLE scan_sessions ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'open'")
         _add_col_if_missing(conn, "scan_sessions", "finalized_at",
                             "ALTER TABLE scan_sessions ADD COLUMN finalized_at DATETIME NULL")
+        _add_col_if_missing(conn, "scan_sessions", "test_total",
+                            "ALTER TABLE scan_sessions ADD COLUMN test_total INT NULL")
 
 
-def create_session(session_code: str, operator_name: str, test_date_str: str, course_code: str) -> int:
+def create_session(
+    session_code: str, operator_name: str, test_date_str: str, course_code: str, test_total: int,
+) -> int:
     try:
         with _engine.begin() as conn:
             result = conn.execute(
                 text("""
-                    INSERT INTO scan_sessions (session_code, operator_name, test_date, course_code)
-                    VALUES (:session_code, :operator_name, :test_date, :course_code)
+                    INSERT INTO scan_sessions (session_code, operator_name, test_date, course_code, test_total)
+                    VALUES (:session_code, :operator_name, :test_date, :course_code, :test_total)
                 """),
                 {
                     "session_code": session_code,
                     "operator_name": operator_name,
                     "test_date": date.fromisoformat(test_date_str),
                     "course_code": course_code,
+                    "test_total": test_total,
                 },
             )
             return result.lastrowid
@@ -241,6 +266,14 @@ def insert_booklet(
     pdf_path: str,
     confidence: float | None = None,
     checksum: str | None = None,
+    mark: int | None = None,
+    mark_confidence: float | None = None,
+    mark_candidates: list[int] | None = None,
+    mark_needs_review: bool = False,
+    emplid_crop: str | None = None,
+    course_code_crop: str | None = None,
+    mark_crop_1: str | None = None,
+    mark_crop_2: str | None = None,
 ) -> dict:
     """
     Insert a booklet and try to link it to an expected class-list student
@@ -252,6 +285,14 @@ def insert_booklet(
     the booklet's PDF content, or None; a booklet whose checksum matches one
     already stored in this session is rejected (DuplicateChecksumError).
 
+    `mark` is the resolved mark (or None if flagged for review — see
+    routes._resolve_mark), `mark_confidence` its OCR confidence,
+    `mark_candidates` the top two numeric candidates found, and
+    `mark_needs_review` whether the candidates didn't match the session's
+    test total. `emplid_crop`/`course_code_crop`/`mark_crop_1`/`mark_crop_2`
+    are base64 PNG crops (no data-URI prefix) captured at scan time, shown
+    next to their fields when an operator manually reviews the booklet.
+
     Returns {"booklet_id": int, "student_id": int | None} — student_id is None
     for a booklet whose emplid isn't on the class list (flagged for review).
     """
@@ -261,10 +302,14 @@ def insert_booklet(
                 text("""
                     INSERT INTO booklets
                         (session_id, emplid, course_code_scanned, course_code_verified,
-                         num_pages, confidence, pdf_path, checksum)
+                         num_pages, confidence, pdf_path, checksum,
+                         mark, mark_confidence, mark_candidates, mark_needs_review,
+                         emplid_crop, course_code_crop, mark_crop_1, mark_crop_2)
                     VALUES
                         (:session_id, :emplid, :course_code_scanned, :verified,
-                         :num_pages, :confidence, :pdf_path, :checksum)
+                         :num_pages, :confidence, :pdf_path, :checksum,
+                         :mark, :mark_confidence, :mark_candidates, :mark_needs_review,
+                         :emplid_crop, :course_code_crop, :mark_crop_1, :mark_crop_2)
                 """),
                 {
                     "session_id": session_id,
@@ -275,6 +320,14 @@ def insert_booklet(
                     "confidence": confidence,
                     "pdf_path": pdf_path,
                     "checksum": checksum,
+                    "mark": mark,
+                    "mark_confidence": mark_confidence,
+                    "mark_candidates": ",".join(str(v) for v in mark_candidates) if mark_candidates else None,
+                    "mark_needs_review": mark_needs_review,
+                    "emplid_crop": emplid_crop,
+                    "course_code_crop": course_code_crop,
+                    "mark_crop_1": mark_crop_1,
+                    "mark_crop_2": mark_crop_2,
                 },
             )
             booklet_id = result.lastrowid
@@ -359,6 +412,14 @@ def update_booklet_result(
     pdf_path: str,
     confidence: float | None = None,
     checksum: str | None = None,
+    mark: int | None = None,
+    mark_confidence: float | None = None,
+    mark_candidates: list[int] | None = None,
+    mark_needs_review: bool = False,
+    emplid_crop: str | None = None,
+    course_code_crop: str | None = None,
+    mark_crop_1: str | None = None,
+    mark_crop_2: str | None = None,
 ) -> dict:
     """
     Fill in a placeholder booklet (see create_pending_booklet) with real OCR
@@ -367,6 +428,9 @@ def update_booklet_result(
     collides with another booklet in the same session, or
     DuplicateChecksumError if `checksum` matches another booklet's (the caller
     marks the row errored and leaves the sentinel emplid in place).
+
+    `mark`/`mark_confidence`/`mark_candidates`/`mark_needs_review`/crop
+    fields mirror insert_booklet's fields — see routes._resolve_mark.
 
     Returns {"booklet_id": int, "student_id": int | None}.
     """
@@ -389,6 +453,14 @@ def update_booklet_result(
                         confidence = :confidence,
                         pdf_path = :pdf_path,
                         checksum = :checksum,
+                        mark = :mark,
+                        mark_confidence = :mark_confidence,
+                        mark_candidates = :mark_candidates,
+                        mark_needs_review = :mark_needs_review,
+                        emplid_crop = :emplid_crop,
+                        course_code_crop = :course_code_crop,
+                        mark_crop_1 = :mark_crop_1,
+                        mark_crop_2 = :mark_crop_2,
                         status = 'complete',
                         error_message = NULL
                     WHERE id = :bid
@@ -401,6 +473,14 @@ def update_booklet_result(
                     "confidence": confidence,
                     "pdf_path": pdf_path,
                     "checksum": checksum,
+                    "mark": mark,
+                    "mark_confidence": mark_confidence,
+                    "mark_candidates": ",".join(str(v) for v in mark_candidates) if mark_candidates else None,
+                    "mark_needs_review": mark_needs_review,
+                    "emplid_crop": emplid_crop,
+                    "course_code_crop": course_code_crop,
+                    "mark_crop_1": mark_crop_1,
+                    "mark_crop_2": mark_crop_2,
                     "bid": booklet_id,
                 },
             )
@@ -430,25 +510,30 @@ def update_booklet_fields(
     emplid=_UNSET,
     course_code_scanned=_UNSET,
     num_pages=_UNSET,
+    mark=_UNSET,
 ) -> dict:
     """
     Operator edit of a booklet's OCR-derived metadata. Only the supplied
     fields change. Changing `emplid` unlinks any previously matched roster
     student and re-links against the new value (via _link_booklet_to_student);
     changing `course_code_scanned` recomputes `course_code_verified` against
-    the session's declared course code.
+    the session's declared course code. `mark` is a plain manual override of
+    the auto-extracted handwritten mark — it does not touch
+    `mark_confidence`/`mark_candidates`, which stay as the OCR's own record.
+    Supplying `mark` also clears `mark_needs_review` — editing the mark is
+    the manual review being completed.
 
     Raises BookletNotFoundError for an unknown id, DuplicateEmplidError if the
     new emplid collides with another booklet in the same session.
 
     Returns {"booklet_id", "student_id", "course_code_verified", "emplid",
-             "course_code_scanned", "num_pages"} after the update.
+             "course_code_scanned", "num_pages", "mark"} after the update.
     """
     with _engine.begin() as conn:
         cur = conn.execute(
             text("""
                 SELECT b.session_id, b.emplid, b.course_code_scanned, b.num_pages,
-                       b.student_id, s.course_code AS session_course
+                       b.mark, b.student_id, s.course_code AS session_course
                 FROM booklets b
                 JOIN scan_sessions s ON s.id = b.session_id
                 WHERE b.id = :bid
@@ -467,6 +552,7 @@ def update_booklet_fields(
         )
         new_ccs = (new_ccs or "").strip()
         new_pages = cur["num_pages"] if num_pages is _UNSET else num_pages
+        new_mark = cur["mark"] if mark is _UNSET else mark
 
         emplid_changed = new_emplid.upper() != (cur["emplid"] or "").strip().upper()
         verified = bool(new_ccs) and (
@@ -484,6 +570,7 @@ def update_booklet_fields(
             )
 
         set_student_null = ", student_id = NULL" if emplid_changed else ""
+        clear_review = ", mark_needs_review = FALSE" if mark is not _UNSET else ""
         try:
             conn.execute(
                 text(f"""
@@ -491,7 +578,8 @@ def update_booklet_fields(
                     SET emplid = :emplid,
                         course_code_scanned = :ccs,
                         course_code_verified = :verified,
-                        num_pages = :pages{set_student_null}
+                        num_pages = :pages,
+                        mark = :mark{set_student_null}{clear_review}
                     WHERE id = :bid
                 """),
                 {
@@ -499,6 +587,7 @@ def update_booklet_fields(
                     "ccs": new_ccs,
                     "verified": verified,
                     "pages": new_pages,
+                    "mark": new_mark,
                     "bid": booklet_id,
                 },
             )
@@ -516,6 +605,7 @@ def update_booklet_fields(
             "emplid": new_emplid,
             "course_code_scanned": new_ccs,
             "num_pages": new_pages,
+            "mark": new_mark,
         }
 
 
@@ -550,6 +640,30 @@ def delete_booklet(booklet_id: int) -> dict:
     return {"booklet_id": booklet_id, "session_id": cur["session_id"], "pdf_path": cur["pdf_path"]}
 
 
+def delete_session(session_code: str) -> dict:
+    """
+    Permanently remove a session: its booklets, its roster rows, then the
+    scan_sessions row itself (no ON DELETE CASCADE exists, so children must
+    go first). Raises SessionNotFoundError if the code doesn't exist.
+    Returns {"session_id", "session_code"} so the caller can remove the
+    on-disk storage folder after the transaction commits.
+    """
+    with _engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT id FROM scan_sessions WHERE session_code = :code"),
+            {"code": session_code},
+        ).mappings().first()
+        if row is None:
+            raise SessionNotFoundError(session_code)
+        session_id = row["id"]
+
+        conn.execute(text("DELETE FROM booklets WHERE session_id = :sid"), {"sid": session_id})
+        conn.execute(text("DELETE FROM session_students WHERE session_id = :sid"), {"sid": session_id})
+        conn.execute(text("DELETE FROM scan_sessions WHERE id = :sid"), {"sid": session_id})
+
+    return {"session_id": session_id, "session_code": session_code}
+
+
 def get_imported_run_ids(session_id: int) -> set[str]:
     """run_ids already collected for this session that should NOT be collected
     again — every 'complete' one, plus 'processing' ones still within the
@@ -580,7 +694,8 @@ def list_booklets_for_session(session_id: int) -> list[dict]:
                 SELECT b.id, b.run_id, b.emplid, b.student_id,
                        b.course_code_scanned, b.course_code_verified,
                        b.num_pages, b.confidence, b.status, b.error_message,
-                       b.created_at, ss.name AS student_name
+                       b.created_at, b.mark, b.mark_confidence, b.mark_needs_review,
+                       ss.name AS student_name
                 FROM booklets b
                 LEFT JOIN session_students ss ON ss.id = b.student_id
                 WHERE b.session_id = :sid
@@ -610,8 +725,39 @@ def list_booklets_for_session(session_id: int) -> list[dict]:
             "status": r["status"],
             "error_message": r["error_message"],
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "mark": r["mark"],
+            "mark_confidence": float(r["mark_confidence"]) if r["mark_confidence"] is not None else None,
+            "mark_needs_review": bool(r["mark_needs_review"]),
         })
     return out
+
+
+def get_booklet_crops(booklet_id: int) -> dict | None:
+    """Field/mark crop images + candidate values for one booklet's manual
+    review — fetched on demand by the booklet edit form rather than bundled
+    into list_booklets_for_session (which polls every few seconds)."""
+    with _engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT emplid_crop, course_code_crop, mark_crop_1, mark_crop_2, mark_candidates
+                FROM booklets
+                WHERE id = :bid
+            """),
+            {"bid": booklet_id},
+        ).mappings().first()
+    if row is None:
+        return None
+    candidates = (
+        [int(v) for v in row["mark_candidates"].split(",") if v]
+        if row["mark_candidates"] else []
+    )
+    return {
+        "emplid_crop": row["emplid_crop"],
+        "course_code_crop": row["course_code_crop"],
+        "mark_crop_1": row["mark_crop_1"],
+        "mark_crop_2": row["mark_crop_2"],
+        "mark_candidates": candidates,
+    }
 
 
 def import_session_students(session_id: int, students: list[dict]) -> dict:
@@ -769,7 +915,8 @@ def get_session_review(session_id: int) -> list[dict]:
                 SELECT ss.id AS student_id, ss.name, ss.username,
                        ss.expected, ss.scanned, ss.booklet_id, ss.scanned_at,
                        b.emplid AS b_emplid, b.confidence,
-                       b.course_code_scanned, b.course_code_verified, b.num_pages
+                       b.course_code_scanned, b.course_code_verified, b.num_pages,
+                       b.mark, b.mark_confidence
                 FROM session_students ss
                 LEFT JOIN booklets b ON b.id = ss.booklet_id
                 WHERE ss.session_id = :sid
@@ -779,7 +926,8 @@ def get_session_review(session_id: int) -> list[dict]:
         booklet_rows = conn.execute(
             text("""
                 SELECT id, emplid, confidence, course_code_scanned,
-                       course_code_verified, num_pages, created_at
+                       course_code_verified, num_pages, created_at,
+                       mark, mark_confidence
                 FROM booklets
                 WHERE session_id = :sid AND student_id IS NULL
             """),
@@ -807,6 +955,8 @@ def get_session_review(session_id: int) -> list[dict]:
             ),
             "num_pages": r["num_pages"],
             "scanned_at": r["scanned_at"].isoformat() if r["scanned_at"] else None,
+            "mark": r["mark"],
+            "mark_confidence": float(r["mark_confidence"]) if r["mark_confidence"] is not None else None,
         })
     for r in booklet_rows:
         items.append({
@@ -827,6 +977,8 @@ def get_session_review(session_id: int) -> list[dict]:
             ),
             "num_pages": r["num_pages"],
             "scanned_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "mark": r["mark"],
+            "mark_confidence": float(r["mark_confidence"]) if r["mark_confidence"] is not None else None,
         })
 
     items.sort(key=lambda it: (_REVIEW_RANK.get(it["status"], 99), (it["name"] or "").lower()))
@@ -843,6 +995,24 @@ def list_completed_booklet_pdfs(session_id: int) -> list[dict]:
                 FROM booklets
                 WHERE session_id = :sid AND status = 'complete'
                 ORDER BY created_at, id
+            """),
+            {"sid": session_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def list_confirmed_results(session_id: int) -> list[dict]:
+    """Every roster student who is expected and has a scanned booklet linked —
+    the set finalize_session just confirmed. `{student_id, emplid, mark,
+    pdf_path}` per row, feeds the post-confirmation PDF/CSV downloads."""
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT ss.id AS student_id, b.emplid, b.mark, b.pdf_path
+                FROM session_students ss
+                JOIN booklets b ON b.id = ss.booklet_id
+                WHERE ss.session_id = :sid AND ss.expected = TRUE AND ss.scanned = TRUE
+                ORDER BY b.emplid
             """),
             {"sid": session_id},
         ).mappings().all()
