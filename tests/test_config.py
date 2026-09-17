@@ -190,6 +190,43 @@ def test_zero_return_shortfall_is_allowed(config_manager, config):
     config_manager._validate(changed)
 
 
+@pytest.mark.parametrize("mode", ["motor2_only", "shared"])
+def test_page_turn_sequence_modes_are_allowed(config_manager, config, mode):
+    changed = deepcopy(config)
+    changed["workflow"]["turn_sequence"] = mode
+
+    config_manager._validate(changed)
+
+
+def test_unknown_page_turn_sequence_is_rejected(config_manager, config):
+    changed = deepcopy(config)
+    changed["workflow"]["turn_sequence"] = "parallel"
+
+    with pytest.raises(ConfigError, match="workflow.turn_sequence"):
+        config_manager._validate(changed)
+
+
+@pytest.mark.parametrize("degrees", [0.0, 45.0, 90.0])
+def test_motor_two_preposition_within_first_leg_is_allowed(
+    config_manager, config, degrees
+):
+    changed = deepcopy(config)
+    changed["motor2"]["preposition_degrees"] = degrees
+
+    config_manager._validate(changed)
+
+
+@pytest.mark.parametrize("degrees", [-0.1, 90.1])
+def test_motor_two_preposition_outside_first_leg_is_rejected(
+    config_manager, config, degrees
+):
+    changed = deepcopy(config)
+    changed["motor2"]["preposition_degrees"] = degrees
+
+    with pytest.raises(ConfigError, match="motor2.preposition_degrees"):
+        config_manager._validate(changed)
+
+
 def test_fan_duty_outside_percent_range_is_rejected(config_manager, config):
     changed = deepcopy(config)
     changed["fan"]["duty_pct"] = 150

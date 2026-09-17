@@ -49,7 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_degrees": 190.0,
         "default_clockwise": True,
         "invert_direction": False,
-        "page_turn_degrees": 90.0,
+        "page_turn_degrees": 105.0,
         "shared_degrees": 80.0,
         "return_short_degrees": 10.0,
     },
@@ -66,6 +66,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_clockwise": True,
         "invert_direction": False,
         "page_turn_degrees": 90.0,
+        "preposition_degrees": 60.0,
         "shared_degrees": 80.0,
         "return_short_degrees": 10.0,
     },
@@ -176,6 +177,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "wait_timeout_seconds": 30.0,
     },
     "workflow": {
+        "turn_sequence": "motor2_only",
         "clamp_down_pause": 1.0,
         "servo_down_pause": 2.0,
         "clamp_up_pause": 0.5,
@@ -438,6 +440,17 @@ class ConfigManager:
 
         self._validate_stepper("motor", config["motor"])
         self._validate_stepper("motor2", config["motor2"])
+        self._require_number(
+            config["motor2"], "preposition_degrees", "motor2", minimum=0
+        )
+        if (
+            config["motor2"]["preposition_degrees"]
+            > config["motor2"]["page_turn_degrees"]
+        ):
+            raise ConfigError(
+                "motor2.preposition_degrees cannot exceed "
+                "motor2.page_turn_degrees"
+            )
 
         # Only [motor] paces the page turn, so this one is not shared.
         self._require_number(
@@ -468,6 +481,11 @@ class ConfigManager:
         self._require_int(fan, "tach_pulses_per_rev", "fan", minimum=1)
 
         workflow = config["workflow"]
+        self._require_str(workflow, "turn_sequence", "workflow")
+        if workflow["turn_sequence"] not in {"motor2_only", "shared"}:
+            raise ConfigError(
+                "workflow.turn_sequence must be 'motor2_only' or 'shared'"
+            )
         for pause in (
             "clamp_down_pause",
             "servo_down_pause",
@@ -647,7 +665,7 @@ default_turn_seconds = 3.0
 default_degrees = 190.0
 default_clockwise = true
 invert_direction = false
-page_turn_degrees = 90.0
+page_turn_degrees = 105.0
 shared_degrees = 80.0
 return_short_degrees = 10.0
 
@@ -662,6 +680,7 @@ default_degrees = 190.0
 default_clockwise = true
 invert_direction = false
 page_turn_degrees = 90.0
+preposition_degrees = 60.0
 shared_degrees = 80.0
 return_short_degrees = 10.0
 
@@ -768,6 +787,7 @@ stale_after_seconds = 3.0
 wait_timeout_seconds = 30.0
 
 [workflow]
+turn_sequence = "motor2_only"
 clamp_down_pause = 1.0
 servo_down_pause = 2.0
 clamp_up_pause = 0.5

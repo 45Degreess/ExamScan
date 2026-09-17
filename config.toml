@@ -59,6 +59,7 @@ default_clockwise = false
 # [motor]. Inverting here means "clockwise" means clockwise for both.
 invert_direction = true
 page_turn_degrees = 90.0
+preposition_degrees = 60.0
 shared_degrees = 80.0
 return_short_degrees = 10.0
 
@@ -176,8 +177,9 @@ stale_after_seconds = 3.0
 wait_timeout_seconds = 30.0
 
 [workflow]
-# Pauses between the page-turn phases: drop clamp, drop arm, stepper out
-# (first half), lift clamp, stepper out (second half), lift arm, return stepper.
+turn_sequence = "shared"
+# Set to "shared" to restore the previous parallel-motor sequence.
+# Every stepper movement is followed by motor_pause.
 clamp_down_pause = 1.0
 servo_down_pause = 1.0
 clamp_up_pause = 0.5
