@@ -320,6 +320,21 @@ def test_page_turn_drives_every_device(api_client, api_server):
     assert len(api_server.stepper2.moves) == 3
 
 
+def test_page_turn_runs_when_obstruction_detection_is_disabled(
+    api_client, api_server
+):
+    """No monitor means unguarded operation, not a None callback crash."""
+    api_server.obstruction = None
+    run_id = api_client.post("/api/runs").json["run_id"]
+
+    response = api_client.post(f"/api/runs/{run_id}/page-turn")
+    health = api_client.get("/api/health").json
+
+    assert response.status == 200
+    assert health["hand_detection"]["state"] == "disabled"
+    assert health["hand_detection"]["safe_to_move"] is True
+
+
 def test_page_turn_runs_the_fan_and_always_shuts_it_off(api_client, api_server):
     """The fan spins up for the drop and is back to 0 by the end."""
     run_id = api_client.post("/api/runs").json["run_id"]

@@ -707,7 +707,14 @@ class ExamScanServer(ThreadingHTTPServer):
             ("motor 1 home", [self._stepper_move(self.stepper, m1_home, not m1_cw)]),
         ]
 
-        abort = self.obstruction.obstructed if self.obstruction is not None else None
+        # Every phase helper expects a callable. With detection disabled the
+        # factory supplies no monitor, so use a callback that never aborts
+        # instead of passing None into _paced(), which calls it directly.
+        abort = (
+            self.obstruction.obstructed
+            if self.obstruction is not None
+            else lambda: False
+        )
         try:
             for index, (label, steps) in enumerate(self._phases, start=1):
                 for step in steps:
