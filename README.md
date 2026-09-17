@@ -8,7 +8,8 @@ The camera watches the bed throughout, and a hand appearing at any point stops t
 where it stands and resumes once the area is clear — see
 [Obstruction detection](#obstruction-detection).
 
-A page turn has sixteen phases, driving two clamps, the arm, the fan and both steppers:
+A page turn has sixteen phases, driving two clamps, the arm, the fan and both steppers. The first
+nine phases are shared by both turn modes:
 
 1. **Drop the small clamp** onto the stack and hold it (`page_clamp_small`)
 2. **Fan to `fan.duty_pct`**, then wait `fan.spinup_seconds` for it to reach speed
@@ -16,27 +17,49 @@ A page turn has sixteen phases, driving two clamps, the arm, the fan and both st
 4. **Drop the big clamp** and hold it (`page_clamp_big`)
 5. **Lift the small clamp** clear
 6. **Turn motor 1** out `motor.page_turn_degrees`, staying energised
-7. **Lift the arm** clear
-8. **Fan off** — the page is captive now
-9. **Drop the small clamp** again and hold
-10. **Lift the big clamp** clear
-11. **Turn motor 2** out `motor2.page_turn_degrees`
-12. **Turn both motors** a further `shared_degrees`, in parallel
-13. **Return motor 2** home
-14. **Turn motor 1** back `shared_degrees`
-15. **Lift the small clamp** clear
-16. **Return motor 1** home, de-energising at last
+7. **Pre-position motor 2** by `motor2.preposition_degrees`, then wait `motor_pause`
+8. **Lift the arm** clear
+9. **Fan off** — the page is captive now
 
-The two clamps hand the page between them: each grips before the other releases, so the page is
-never loose. Motor 1 stays energised from phase 6 to phase 16 so it holds position against the
-clamp rather than slipping under load.
+With `workflow.turn_sequence = "motor2_only"`, the remaining phases are:
+
+10. **Return motor 1 exactly home**, then wait `motor_pause`
+11. **Drop the small clamp** again and hold
+12. **Lift the big clamp** clear
+13. **Finish motor 2's first leg** using the exact step remainder
+14. **Continue motor 2 alone** by `motor2.shared_degrees`
+15. **Return motor 2** home
+16. **Lift the small clamp** clear
+
+The factory default is `motor2_only`. Motor 1 stays energised from phase 6 until its exact return
+in phase 10. The big clamp remains engaged while motor 2 pre-positions and motor 1 returns; the
+small clamp then grips before the big clamp releases.
+
+The deployed rig currently uses `workflow.turn_sequence = "shared"`. Its remaining phases are:
+
+10. **Drop the small clamp** again and hold
+11. **Lift the big clamp** clear
+12. **Finish motor 2's first leg** using the exact step remainder
+13. **Turn both motors** through their configured `shared_degrees`
+14. **Return motor 2** home
+15. **Return motor 1 through its shared leg**, then lift the small clamp
+16. **Complete motor 1's return**
+
+In both modes, motor 2 pre-positions while the arm remains down and the fan remains on. The fan
+switches off only after the arm has risen.
+
+The demo's **Scan Last Page** action uses a separate last-page variant. It captures the page but
+leaves the run open, keeps the big clamp at its hold angle through every configured forward motor
+leg, and raises that clamp before the motors return. The hold setpoint is reasserted before the
+postponed movement so the servo's safety timer does not release the clamp early. Ordinary page
+turns and auto-scans keep the sequences above.
 
 Every move is split by **step count, not degrees** — converting part-degree moves and rounding twice
 can land a step away from the matching return, leaving a wheel off by a step on every page.
 
-**The wheels do not end where they started.** Each motor's final return stops
-`return_short_degrees` short, so a multi-page run walks both wheels steadily round. That is a
-correction for a rig that over-travels; set `return_short_degrees = 0` for an exact round trip.
+In `motor2_only` mode, motor 1 returns exactly to its starting step position and motor 2 retains
+its configured `return_short_degrees` correction. In `shared` mode, both motors retain that
+correction. Set `return_short_degrees = 0` for exact returns in the shared sequence as well.
 
 Clamps seat at `contact_angle`, then ease back to `hold_angle` and stay powered there. Holding hard
 against a stop the servo cannot reach leaves it stalled — buzzing, warming up and dragging the
@@ -62,7 +85,7 @@ the stream and drives capture and page turns over the API. See [API](#api) for t
 | Page drop / clamps | Servos |
 | Fan | Waveshare FAN-4020-PWM-5V, 25 kHz hardware PWM |
 | Stepper (page wheel) | NEMA 17 SM24240 with MKS TMC2209 V2.0, driven as step/dir |
-| Stepper 2 | DRV8825, full step — drives phases 11 to 13 of the page turn |
+| Stepper 2 | DRV8825, full step — drives phases 9 and 13 to 15 of the default page turn |
 
 ### Wiring
 
@@ -127,8 +150,11 @@ doesn't specify a count. It applies live — no restart needed.
 
 | Field | Controls |
 |---|---|
-| `motor.page_turn_degrees` | How far each motor goes out before the shared leg |
-| `motor.shared_degrees` | The leg both motors turn together in phase 12 |
+| `workflow.turn_sequence` | `motor2_only` for the default early return, or `shared` to restore parallel movement |
+| `motor.page_turn_degrees` | Initial outward movement for each motor |
+| `motor2.preposition_degrees` | Portion of motor 2's first leg moved before motor 1 returns |
+| `motor.shared_degrees` | Motor 1's parallel leg in `shared` rollback mode |
+| `motor2.shared_degrees` | Motor 2's continuation; performed alone by default or in parallel in `shared` mode |
 | `motor.return_short_degrees` | How far the final return stops short of home; 0 for an exact round trip |
 | `motor.default_clockwise` | Direction of the outward turn; returns are the opposite |
 | `motor2.*` | Second stepper on GPIO 23/24/25, full step. Same page-turn keys as `motor` |
@@ -510,6 +536,7 @@ servos are reachable only through the run actions below.
 | POST | `/api/runs/{id}/capture` | Capture one page |
 | POST | `/api/runs/{id}/page-turn` | The sixteen-phase clamp, arm, fan and stepper sequence |
 | POST | `/api/runs/{id}/scan-step` | Capture, then turn the page |
+| POST | `/api/runs/{id}/scan-last-page` | Capture, then turn with the big clamp held until all forward motor legs finish; leaves the run open |
 | POST | `/api/runs/{id}/auto-scan` | Scan N pages then complete. Optional body `{"pages": N}`; defaults to `workflow.default_pages` |
 | POST | `/api/runs/{id}/complete` | Close the run |
 | GET | `/api/runs/{id}/archive` | Download all pages as a ZIP |
@@ -592,6 +619,13 @@ curl -s -X POST localhost:8000/api/runs/$RUN/capture
 curl -s -X POST localhost:8000/api/runs/$RUN/scan-step
 ```
 
+For the final page, capture it with the delayed big-clamp release and finish the run separately:
+
+```bash
+curl -s -X POST localhost:8000/api/runs/$RUN/scan-last-page
+curl -s -X POST localhost:8000/api/runs/$RUN/complete
+```
+
 Scan a fixed number of pages and finish automatically:
 
 ```bash
@@ -670,8 +704,8 @@ Taking a still requires reconfiguring the sensor from preview (1920×1080) to fu
 makes `_serve_stream`'s `while camera.streaming:` loop exit and closes the HTTP connection. Your
 `<img>` goes blank and stays blank.
 
-Re-set `img.src` after every `capture`, `scan-step` or `auto-scan`, allowing roughly a second for
-preview to resume:
+Re-set `img.src` after every `capture`, `scan-step`, `scan-last-page` or `auto-scan`, allowing
+roughly a second for preview to resume:
 
 ```js
 const PI = "http://<pi-ip>:8000";
