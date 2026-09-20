@@ -9,37 +9,55 @@ This covers the MySQL-backed session/booklet storage.
 how the tables fit together, how to run MySQL
 locally via Docker, and how to inspect the data yourself.
 
+
 ## How it works
 
 A **scan session** represents one exam sitting: a course code, a test date,
-an operator name, and a session code you choose. You start it once via
-`POST /sessions`, and it stays open for the lifetime of the run — every
-booklet scanned afterwards is submitted against that session code.
+an operator name, a session code you choose, and the exam's `test_total`.
+You start it once via `POST /sessions`, and it stays `open` until explicitly finalised.
 
-Each **booklet** is one student's scanned pages, submitted via
-`POST /sessions/{session_code}/booklets`. That endpoint:
+Each **booklet** is one student's scanned pages. There are two ways one gets
+created:
 
-1. Runs the existing `_process_exam_folder` pipeline over the folder of
-   images you point it at (same OCR/scan logic as `/process-folder`),
-   producing a `combined.pdf` and a `student_info` dict (Emplid, Course Code,
-   number of pages).
-2. Compares the OCR'd `Course Code` against the session's declared
-   `course_code` (case-insensitive, trimmed).
-3. Writes a row to MySQL and moves the PDF + pages into
-   `software/storage/<session_code>/<emplid>/`.
+- **Pi-driven capture** (the normal path): `POST /sessions/{code}/capture-run`
+  triggers a fresh scan on the Pi hardware server and blocks until it
+  finishes; `POST /sessions/{code}/collect-runs` instead pulls in whatever
+  completed runs are already sitting on the Pi. 
+- Either way, a placeholder booklet row is inserted immediately with `status = 'processing'`, and the
+  actual OCR/scan work happens in a background task — the frontend polls
+  `GET /sessions/{code}/booklets` to watch it turn into `'complete'` (or
+  `'error'`, with `error_message` set, if processing failed).
 
-**Mismatches are never rejected.** If the OCR'd course code doesn't match
-the session's, the booklet is still stored — `course_code_verified` is just
-set to `0` so it can be pulled up for manual review later. The only thing
-that *is* rejected is a duplicate Emplid within the same session (HTTP 409)
-— it's assumed to be a re-submission, not a legitimate second booklet.
+
+Once OCR finishes:
+
+1. Compare the OCR'd `Course Code` against the session's declared
+   `course_code` (case-insensitive, trimmed) → `course_code_verified`.
+2. Extract the handwritten mark from the cover's red-pen regions and resolve
+   it against `test_total` (`_resolve_mark` in `routes.py`): the higher of
+   the two pooled candidates is expected to equal `test_total`; if it
+   doesn't, the mark is stored as `NULL` and flagged `mark_needs_review = 1`
+   for manual entry. Field/mark crop images are stored alongside so an
+   operator can visually confirm from the UI without re-scanning.
+3. Write a row to MySQL and move the PDF + pages into `software/storage/<session_code>/<emplid>/`.
+
+**Mismatches are never rejected outright.** A course-code mismatch just sets
+`course_code_verified = 0` for later review. 
+What *is* rejected (HTTP 409) is a duplicate Emplid within the same session,
+or that same Emplid resubmitted with an identical `checksum` (SHA-256 of the
+PDF's bytes) — same student, same file content already recorded for this
+session — since that's assumed to be a re-submission rather than a second
+legitimate booklet. 
+
+When an operator is scanning, `POST /sessions/{code}/finalize` applies the final `expected` flags and marks the
+session `status = 'finalized'`. It also best-effort clears the Pi's stored runs so scan
+data doesn't linger on the hardware.
 
 ### Expected-student roster (class list)
 
 A session can carry a **class list**: the students expected to sit the exam.
 It's imported from a CSV (`Name, Pronouns, UserName, Email, Role,
-LastAccessed`) — either at session creation (`class_list` file field on
-`POST /sessions`) or later via `POST /sessions/{session_code}/class-list`.
+LastAccessed`).
 Only `Role == Student` rows are kept, and only **Name**, **UserName** and
 **Role** are stored, one row per student in `session_students` with
 `expected = 1`.
@@ -79,6 +97,9 @@ CREATE TABLE scan_sessions (
     operator_name VARCHAR(128) NOT NULL,
     test_date     DATE         NOT NULL,
     course_code   VARCHAR(64)  NOT NULL,
+    status        VARCHAR(32)  NOT NULL DEFAULT 'open',   -- 'open' | 'finalized'
+    finalized_at  DATETIME     NULL,
+    test_total    INT          NULL,   -- exam's max mark, used to verify the scanned mark
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -105,26 +126,40 @@ CREATE TABLE booklets (
     course_code_scanned   VARCHAR(64)  NULL,
     course_code_verified  BOOLEAN      NOT NULL DEFAULT FALSE,
     num_pages             INT          NULL,
+    confidence            FLOAT        NULL,   -- OCR confidence for the cover fields
     pdf_path              VARCHAR(512) NOT NULL,
+    run_id                VARCHAR(64)  NULL,   -- Pi run this booklet came from, if any
+    status                VARCHAR(32)  NOT NULL DEFAULT 'complete',  -- 'processing' | 'complete' | 'error'
+    error_message         VARCHAR(512) NULL,
+    checksum              VARCHAR(64)  NULL,   -- SHA-256 of the PDF bytes; dedups re-submissions
+    mark                  INT          NULL,   -- resolved handwritten mark (NULL if flagged for review)
+    mark_confidence       FLOAT        NULL,
+    mark_candidates       VARCHAR(64)  NULL,   -- top-2 candidates, comma-joined
+    mark_needs_review     BOOLEAN      NOT NULL DEFAULT FALSE,
+    emplid_crop           TEXT         NULL,   -- base64 PNG crops for manual review, no data-URI prefix
+    course_code_crop      TEXT         NULL,
+    mark_crop_1           TEXT         NULL,
+    mark_crop_2           TEXT         NULL,
     created_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES scan_sessions(id),
     UNIQUE KEY uq_session_emplid (session_id, emplid),
-    KEY idx_booklets_student (student_id)
+    UNIQUE KEY uq_session_checksum (session_id, emplid, checksum),
+    KEY idx_booklets_student (student_id),
+    KEY idx_booklets_run (session_id, run_id)
 );
 ```
 
 `session_students.booklet_id` and `booklets.student_id` point at each other
 but are kept as plain nullable `INT`s (no cross `FOREIGN KEY`) to avoid a
-circular table-creation dependency. `init_db()` also runs a one-off
-`ALTER TABLE booklets ADD COLUMN student_id` for databases created before
-this column existed.
+circular table-creation dependency.
 
 Why `VARCHAR` and not fixed-width `CHAR`: OCR output isn't guaranteed to
 match a fixed length or format, this keeps the DB from rejecting an unexpected value which has not yet been confirmed by a human.
 
 Tables are created automatically on app startup (`db.init_db()` in
-`scanner_api.py`) via `CREATE TABLE IF NOT EXISTS` — there's no separate
-migration step to run.
+`scanner_api.py`) via `CREATE TABLE IF NOT EXISTS` with this full schema
+already in place — there's no separate migration step to run, and (schema
+now treated as final) no backfill logic for older databases either.
 
 ## Running MySQL locally (Docker)
 
@@ -255,3 +290,7 @@ find software/storage -type f
 - **`404` on `/sessions/{code}/booklets`** — no session with that code was
   ever created (or the app was restarted against a different/empty
   database).
+
+## AI Decleration for database
+The Database schema was designed by Devak Mistry, Design choices were made to describe the booklets and the sessions aswell as how to resolve dupelicates and missing students/scripts. Claude Sonnet 3.5 and Claude Code was used to assist with the implemntation of the MySql framework and to setup the docker application for hosting. 
+

@@ -42,8 +42,9 @@ class DuplicateEmplidError(Exception):
 
 
 class DuplicateChecksumError(Exception):
-    """Raised when (session_id, checksum) already exists — the booklet's PDF
-    content is identical to one already stored in this session."""
+    """Raised when (session_id, emplid, checksum) already exists — the same
+    student's booklet PDF content is identical to one already stored in this
+    session."""
 
 
 class BookletNotFoundError(Exception):
@@ -134,7 +135,7 @@ def init_db() -> None:
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES scan_sessions(id),
                 UNIQUE KEY uq_session_emplid (session_id, emplid),
-                UNIQUE KEY uq_session_checksum (session_id, checksum),
+                UNIQUE KEY uq_session_checksum (session_id, emplid, checksum),
                 KEY idx_booklets_student (student_id),
                 KEY idx_booklets_run (session_id, run_id)
             )
@@ -209,8 +210,7 @@ def _raise_for_booklet_integrity_error(
     exc: IntegrityError, emplid: str, checksum: str | None
 ) -> None:
     """Distinguish which unique key on `booklets` a failed insert/update
-    violated (uq_session_checksum vs uq_session_emplid) and raise the
-    matching error."""
+    violated (uq_session_checksum, on (session_id, emplid, checksum)"""
     if checksum is not None and "uq_session_checksum" in str(exc.orig):
         raise DuplicateChecksumError(checksum) from exc
     raise DuplicateEmplidError(emplid) from exc
@@ -242,7 +242,8 @@ def insert_booklet(
     `confidence` is a 0-1 scalar OCR confidence for the cover fields, or None
     when no cover page was extracted. `checksum` is a SHA-256 hex digest of
     the booklet's PDF content, or None; a booklet whose checksum matches one
-    already stored in this session is rejected (DuplicateChecksumError).
+    already stored for that same emplid in this session is rejected
+    (DuplicateChecksumError).
 
     `mark` is the resolved mark (or None if flagged for review — see
     routes._resolve_mark), `mark_confidence` its OCR confidence,
@@ -385,7 +386,7 @@ def update_booklet_result(
     mark it 'complete'
     link it to a class-list student the same
     Raises DuplicateEmplidError if `emplid` collides with another booklet in the same session, or
-    DuplicateChecksumError if `checksum` matches another booklet's in the same session.
+    DuplicateChecksumError if `checksum` matches another booklet's for that same emplid in the same session.
 
     Returns {"booklet_id": int, "student_id": int | None}.
     """
