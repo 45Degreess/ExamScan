@@ -13,9 +13,6 @@ wheels/
 motor copy.py
 hardware/find_focus.py
 
-# Agent worktrees and session state
-.claude/
-
 # Scanner runtime output and calibration scratch
 runs/
 focus_tests/
@@ -35,9 +32,6 @@ software/.env
 software/.cookies.txt
 software/.csrf_token
 
-# Local backups taken before editing
-*.bak
 
-# Generated knowledge graph and agent instructions
-graphify-out/
-CLAUDE.md
+
+
