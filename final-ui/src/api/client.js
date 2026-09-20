@@ -1,5 +1,5 @@
-// Thin fetch wrapper for the real FastAPI backend (software/scanner_api.py).
-// Mirrors examscan-ui's convention: API_BASE = "/api", proxied by vite.config.js.
+// API wrapper for the FastAPI backend, since in development stages
+
 export const API_BASE = "/api";
 
 let csrfToken = "";

@@ -6,15 +6,14 @@ import numpy as np
 
 def validate_quadrilateral(approx, image_shape) -> bool:
     """
-    Reject contours that are too small, hug the image border,
-    or cover nearly the entire image.
+    Reject contours that are too small, hug the image border, or cover nearly the entire image.
     """
     h, w = image_shape[:2]
     area = cv2.contourArea(approx)
 
     if area < 0.05 * w * h:
         return False
-    if area > 0.90 * w * h:
+    if area > 0.95 * w * h:
         return False
 
     pts = approx.reshape(-1, 2)
@@ -101,16 +100,16 @@ def detect_by_colour(image: np.ndarray) -> np.ndarray:
     Detect a white / light paper against a distinctly coloured background.
 
     Multi-pass strategy — picks the best result across three masks:
-      A. LAB lightness  (Otsu)           — bright paper vs darker surface
-      B. HSV saturation (Otsu, inverted) — unsaturated paper vs colourful background
-      C. Intersection A ∩ B              — highest confidence
+      A. LAB lightness  (Otsu) = bright paper vs darker surface
+      B. HSV saturation (Otsu, inverted) = unsaturated paper vs colourful background
+      C. Intersection A ∩ B = highest confidence
 
     Each mask is cleaned and searched; the largest valid quad wins.
     Falls back to detect_by_corner if no quad is found.
     """
     h, w = image.shape[:2]
 
-    max_dim = 1500
+    max_dim = 1500 # rescale
     scale = min(max_dim / w, max_dim / h, 1.0)
     if scale < 1.0:
         small = cv2.resize(image, (int(w * scale), int(h * scale)),
@@ -154,6 +153,7 @@ def detect_by_colour(image: np.ndarray) -> np.ndarray:
     return best_quad if best_quad is not None else detect_by_corner(image)
 
 
+# final method used in all requirements
 def detect_document(image: np.ndarray, method: str = "colour") -> np.ndarray:
     """
     Detect the A4 page boundary.

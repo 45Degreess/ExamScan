@@ -1,13 +1,6 @@
 """
 Document Scanner API — FastAPI + OpenCV
 ========================================
-Pipeline:
-  1. Receive image upload
-  2. Detect A4 page — colour-based (default) or corner/edge-based
-  3. Apply 4-point perspective transform  (imutils)
-  4. Resize to A4 at 300 DPI  (2480 × 3508 px)
-  5. Enhance contrast for a clean "scanned" look
-  6. Return the processed image as PNG
 """
 
 import os

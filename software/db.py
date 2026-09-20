@@ -3,8 +3,7 @@ MySQL access layer for scan sessions and booklets.
 
 Config is read from env vars (DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME),
 loaded from a `.env` file if present. Schema is created with a plain
-CREATE TABLE IF NOT EXISTS on startup (see init_db()) — no migration
-tooling is required for the application's small schema.
+CREATE TABLE IF NOT EXISTS on startup (see init_db())
 """
 from __future__ import annotations
 
@@ -55,21 +54,27 @@ class SessionNotFoundError(Exception):
     """Raised when a session_code doesn't exist."""
 
 
-_UNSET = object()  # "field not supplied" sentinel for partial updates
+_UNSET = object() # sentinel for optional params that can be None
 
 
-def _add_col_if_missing(conn, table: str, column: str, ddl: str) -> None:
-    """Idempotent `ALTER TABLE ... ADD COLUMN` for databases created by an
-    earlier schema version — there's no migration tooling. `ddl` is the full
-    statement to run when the column is absent."""
-    has_col = conn.execute(text("""
-        SELECT COUNT(*) FROM information_schema.columns
-        WHERE table_schema = DATABASE()
-          AND table_name = :table
-          AND column_name = :column
-    """), {"table": table, "column": column}).scalar()
-    if not has_col:
-        conn.execute(text(ddl))
+def _f(x) -> float | None:
+    """SQL FLOAT column -> Python float, preserving None."""
+    return float(x) if x is not None else None
+
+
+def _iso(dt) -> str | None:
+    """datetime column -> ISO string, preserving None."""
+    return dt.isoformat() if dt else None
+
+
+def _csv_join(values: list[int] | None) -> str | None:
+    """List of ints -> comma-joined string for storage, or None when empty/None."""
+    return ",".join(str(v) for v in values) if values else None
+
+
+def _csv_split_ints(s: str | None) -> list[int]:
+    """Comma-joined string -> list of ints, or [] when empty/None."""
+    return [int(v) for v in s.split(",") if v] if s else []
 
 
 def init_db() -> None:
@@ -83,6 +88,7 @@ def init_db() -> None:
                 course_code VARCHAR(64) NOT NULL,
                 status VARCHAR(32) NOT NULL DEFAULT 'open',
                 finalized_at DATETIME NULL,
+                test_total INT NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """))
@@ -117,6 +123,14 @@ def init_db() -> None:
                 status VARCHAR(32) NOT NULL DEFAULT 'complete',
                 error_message VARCHAR(512) NULL,
                 checksum VARCHAR(64) NULL,
+                mark INT NULL,
+                mark_confidence FLOAT NULL,
+                mark_candidates VARCHAR(64) NULL,
+                mark_needs_review BOOLEAN NOT NULL DEFAULT FALSE,
+                emplid_crop TEXT NULL,
+                course_code_crop TEXT NULL,
+                mark_crop_1 TEXT NULL,
+                mark_crop_2 TEXT NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES scan_sessions(id),
                 UNIQUE KEY uq_session_emplid (session_id, emplid),
@@ -125,61 +139,6 @@ def init_db() -> None:
                 KEY idx_booklets_run (session_id, run_id)
             )
         """))
-        # Columns added after the tables' first release; back-fill in place
-        # since there's no migration tooling.
-        if not conn.execute(text("""
-            SELECT COUNT(*) FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = 'booklets' AND column_name = 'student_id'
-        """)).scalar():
-            conn.execute(text("ALTER TABLE booklets ADD COLUMN student_id INT NULL"))
-            conn.execute(text("ALTER TABLE booklets ADD KEY idx_booklets_student (student_id)"))
-        _add_col_if_missing(conn, "booklets", "confidence",
-                            "ALTER TABLE booklets ADD COLUMN confidence FLOAT NULL")
-        _add_col_if_missing(conn, "booklets", "run_id",
-                            "ALTER TABLE booklets ADD COLUMN run_id VARCHAR(64) NULL")
-        _add_col_if_missing(conn, "booklets", "status",
-                            "ALTER TABLE booklets ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'complete'")
-        _add_col_if_missing(conn, "booklets", "error_message",
-                            "ALTER TABLE booklets ADD COLUMN error_message VARCHAR(512) NULL")
-        _add_col_if_missing(conn, "booklets", "checksum",
-                            "ALTER TABLE booklets ADD COLUMN checksum VARCHAR(64) NULL")
-        _add_col_if_missing(conn, "booklets", "mark",
-                            "ALTER TABLE booklets ADD COLUMN mark INT NULL")
-        _add_col_if_missing(conn, "booklets", "mark_confidence",
-                            "ALTER TABLE booklets ADD COLUMN mark_confidence FLOAT NULL")
-        _add_col_if_missing(conn, "booklets", "mark_candidates",
-                            "ALTER TABLE booklets ADD COLUMN mark_candidates VARCHAR(64) NULL")
-        _add_col_if_missing(conn, "booklets", "mark_needs_review",
-                            "ALTER TABLE booklets ADD COLUMN mark_needs_review BOOLEAN NOT NULL DEFAULT FALSE")
-        _add_col_if_missing(conn, "booklets", "emplid_crop",
-                            "ALTER TABLE booklets ADD COLUMN emplid_crop TEXT NULL")
-        _add_col_if_missing(conn, "booklets", "course_code_crop",
-                            "ALTER TABLE booklets ADD COLUMN course_code_crop TEXT NULL")
-        _add_col_if_missing(conn, "booklets", "mark_crop_1",
-                            "ALTER TABLE booklets ADD COLUMN mark_crop_1 TEXT NULL")
-        _add_col_if_missing(conn, "booklets", "mark_crop_2",
-                            "ALTER TABLE booklets ADD COLUMN mark_crop_2 TEXT NULL")
-        if not conn.execute(text("""
-            SELECT COUNT(*) FROM information_schema.statistics
-            WHERE table_schema = DATABASE()
-              AND table_name = 'booklets' AND index_name = 'idx_booklets_run'
-        """)).scalar():
-            conn.execute(text("ALTER TABLE booklets ADD KEY idx_booklets_run (session_id, run_id)"))
-        if not conn.execute(text("""
-            SELECT COUNT(*) FROM information_schema.statistics
-            WHERE table_schema = DATABASE()
-              AND table_name = 'booklets' AND index_name = 'uq_session_checksum'
-        """)).scalar():
-            conn.execute(text(
-                "ALTER TABLE booklets ADD UNIQUE KEY uq_session_checksum (session_id, checksum)"
-            ))
-        _add_col_if_missing(conn, "scan_sessions", "status",
-                            "ALTER TABLE scan_sessions ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'open'")
-        _add_col_if_missing(conn, "scan_sessions", "finalized_at",
-                            "ALTER TABLE scan_sessions ADD COLUMN finalized_at DATETIME NULL")
-        _add_col_if_missing(conn, "scan_sessions", "test_total",
-                            "ALTER TABLE scan_sessions ADD COLUMN test_total INT NULL")
 
 
 def create_session(
@@ -322,7 +281,7 @@ def insert_booklet(
                     "checksum": checksum,
                     "mark": mark,
                     "mark_confidence": mark_confidence,
-                    "mark_candidates": ",".join(str(v) for v in mark_candidates) if mark_candidates else None,
+                    "mark_candidates": _csv_join(mark_candidates),
                     "mark_needs_review": mark_needs_review,
                     "emplid_crop": emplid_crop,
                     "course_code_crop": course_code_crop,
@@ -422,15 +381,11 @@ def update_booklet_result(
     mark_crop_2: str | None = None,
 ) -> dict:
     """
-    Fill in a placeholder booklet (see create_pending_booklet) with real OCR
-    results, mark it 'complete', and link it to a class-list student the same
-    way insert_booklet does. Raises DuplicateEmplidError if `emplid` now
-    collides with another booklet in the same session, or
-    DuplicateChecksumError if `checksum` matches another booklet's (the caller
-    marks the row errored and leaves the sentinel emplid in place).
-
-    `mark`/`mark_confidence`/`mark_candidates`/`mark_needs_review`/crop
-    fields mirror insert_booklet's fields — see routes._resolve_mark.
+    Fill in a placeholder booklet with OCR results,
+    mark it 'complete'
+    link it to a class-list student the same
+    Raises DuplicateEmplidError if `emplid` collides with another booklet in the same session, or
+    DuplicateChecksumError if `checksum` matches another booklet's in the same session.
 
     Returns {"booklet_id": int, "student_id": int | None}.
     """
@@ -475,7 +430,7 @@ def update_booklet_result(
                     "checksum": checksum,
                     "mark": mark,
                     "mark_confidence": mark_confidence,
-                    "mark_candidates": ",".join(str(v) for v in mark_candidates) if mark_candidates else None,
+                    "mark_candidates": _csv_join(mark_candidates),
                     "mark_needs_review": mark_needs_review,
                     "emplid_crop": emplid_crop,
                     "course_code_crop": course_code_crop,
@@ -721,12 +676,12 @@ def list_booklets_for_session(session_id: int) -> list[dict]:
                 if r["course_code_verified"] is not None else None
             ),
             "num_pages": r["num_pages"],
-            "confidence": float(r["confidence"]) if r["confidence"] is not None else None,
+            "confidence": _f(r["confidence"]),
             "status": r["status"],
             "error_message": r["error_message"],
-            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "created_at": _iso(r["created_at"]),
             "mark": r["mark"],
-            "mark_confidence": float(r["mark_confidence"]) if r["mark_confidence"] is not None else None,
+            "mark_confidence": _f(r["mark_confidence"]),
             "mark_needs_review": bool(r["mark_needs_review"]),
         })
     return out
@@ -747,10 +702,7 @@ def get_booklet_crops(booklet_id: int) -> dict | None:
         ).mappings().first()
     if row is None:
         return None
-    candidates = (
-        [int(v) for v in row["mark_candidates"].split(",") if v]
-        if row["mark_candidates"] else []
-    )
+    candidates = _csv_split_ints(row["mark_candidates"])
     return {
         "emplid_crop": row["emplid_crop"],
         "course_code_crop": row["course_code_crop"],
@@ -828,7 +780,7 @@ def get_session_students(session_id: int) -> list[dict]:
             "expected": bool(r["expected"]),
             "scanned": bool(r["scanned"]),
             "booklet_id": r["booklet_id"],
-            "scanned_at": r["scanned_at"].isoformat() if r["scanned_at"] else None,
+            "scanned_at": _iso(r["scanned_at"]),
         }
         for r in rows
     ]
@@ -853,7 +805,7 @@ def get_unmatched_booklets(session_id: int) -> list[dict]:
             "emplid": r["emplid"],
             "course_code_scanned": r["course_code_scanned"],
             "num_pages": r["num_pages"],
-            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "created_at": _iso(r["created_at"]),
         }
         for r in rows
     ]
@@ -948,15 +900,15 @@ def get_session_review(session_id: int) -> list[dict]:
             "status": _review_status(scanned, expected),
             "expected": expected,
             "scanned": scanned,
-            "confidence": float(r["confidence"]) if r["confidence"] is not None else None,
+            "confidence": _f(r["confidence"]),
             "course_code_scanned": r["course_code_scanned"],
             "course_code_verified": (
                 bool(r["course_code_verified"]) if r["course_code_verified"] is not None else None
             ),
             "num_pages": r["num_pages"],
-            "scanned_at": r["scanned_at"].isoformat() if r["scanned_at"] else None,
+            "scanned_at": _iso(r["scanned_at"]),
             "mark": r["mark"],
-            "mark_confidence": float(r["mark_confidence"]) if r["mark_confidence"] is not None else None,
+            "mark_confidence": _f(r["mark_confidence"]),
         })
     for r in booklet_rows:
         items.append({
@@ -970,15 +922,15 @@ def get_session_review(session_id: int) -> list[dict]:
             "status": "unexpected",
             "expected": False,
             "scanned": True,
-            "confidence": float(r["confidence"]) if r["confidence"] is not None else None,
+            "confidence": _f(r["confidence"]),
             "course_code_scanned": r["course_code_scanned"],
             "course_code_verified": (
                 bool(r["course_code_verified"]) if r["course_code_verified"] is not None else None
             ),
             "num_pages": r["num_pages"],
-            "scanned_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "scanned_at": _iso(r["created_at"]),
             "mark": r["mark"],
-            "mark_confidence": float(r["mark_confidence"]) if r["mark_confidence"] is not None else None,
+            "mark_confidence": _f(r["mark_confidence"]),
         })
 
     items.sort(key=lambda it: (_REVIEW_RANK.get(it["status"], 99), (it["name"] or "").lower()))

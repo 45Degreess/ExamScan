@@ -15,30 +15,25 @@ _MODEL_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".model_cache")
 
 
 def load_rig_overlay(path) -> np.ndarray:
-    """Load a BGRA rig-occlusion overlay from disk. Raises ValueError if the
-    file has no alpha channel."""
+    """Load a rig overlay from disk. Raises ValueError if the file has no alpha channel."""
     overlay = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if overlay is None or overlay.ndim != 3 or overlay.shape[2] != 4:
         raise ValueError(f"Rig overlay at {path} must be a 4-channel BGRA PNG")
     return overlay
 
 
-def apply_rig_overlay(image: np.ndarray, overlay_bgra: np.ndarray) -> np.ndarray:
+def apply_rig_overlay(image: np.ndarray, overlay: np.ndarray) -> np.ndarray:
     """
-    Alpha-composite overlay_bgra (BGRA, uint8) on top of image (BGR, uint8),
-    hiding rig hardware under the overlay's opaque border while its
-    transparent hole lets the original image show through untouched.
+    apply overlay on top of image, hiding rig hardware under the overlay's opaque border while its hole lets the original image show through untouched.
 
-    Resizes overlay_bgra to image.shape[:2] first if dimensions differ
-    (alpha via INTER_NEAREST to keep the hole edge hard, BGR via
-    INTER_LINEAR).
+    Resizes overlay to image.shape[:2] first if dimensions differ.
     """
-    if overlay_bgra.shape[:2] != image.shape[:2]:
+    if overlay.shape[:2] != image.shape[:2]:
         h, w = image.shape[:2]
-        overlay_bgr = cv2.resize(overlay_bgra[:, :, :3], (w, h), interpolation=cv2.INTER_LINEAR)
-        overlay_a = cv2.resize(overlay_bgra[:, :, 3], (w, h), interpolation=cv2.INTER_NEAREST)
+        overlay_bgr = cv2.resize(overlay[:, :, :3], (w, h), interpolation=cv2.INTER_LINEAR)
+        overlay_a = cv2.resize(overlay[:, :, 3], (w, h), interpolation=cv2.INTER_NEAREST)
     else:
-        overlay_bgr, overlay_a = overlay_bgra[:, :, :3], overlay_bgra[:, :, 3]
+        overlay_bgr, overlay_a = overlay[:, :, :3], overlay[:, :, 3]
 
     alpha = (overlay_a.astype(np.float32) / 255.0)[:, :, None]
     blended = overlay_bgr.astype(np.float32) * alpha + image.astype(np.float32) * (1 - alpha)
@@ -95,14 +90,14 @@ def _get_trocr_device():
     if _trocr_device is None:
         import torch  # noqa: PLC0415
         if torch.backends.mps.is_available():
-            _trocr_device = "mps"
+            _trocr_device = "mps" # mac
         elif torch.cuda.is_available():
-            _trocr_device = "cuda"
+            _trocr_device = "cuda" # nvidia
         else:
-            _trocr_device = "cpu"
+            _trocr_device = "cpu" # cpu
     return _trocr_device
 
-
+# model loading
 def _get_trocr():
     global _trocr_processor, _trocr_model
     if _trocr_processor is None:
@@ -118,8 +113,8 @@ def _get_trocr():
 
 
 def _split_emplid_digits(crop: np.ndarray, num_digits: int = 7, padding: int = EMPLID_PADDING) -> list[np.ndarray]:
-    """Evenly split a full Emplid field crop into `num_digits` single-digit
-    sub-crops, trimming `padding` px total at each internal separator line."""
+    """Evenly split a full Emplid field crop into `num_digits` single-digit crops,
+    trimming `padding` px total at each internal separator line."""
     h, w = crop.shape[:2]
     cell_w = w // num_digits
     digits = []
@@ -156,12 +151,13 @@ def _ocr_trocr(crop: np.ndarray) -> tuple[str, float]:
     outputs = model.generate(
         pixel_values,
         max_length=50,
-        num_beams=1,
+        num_beams=1, # attempts at reading
         output_scores=True,
         return_dict_in_generate=True,
     )
-    text = processor.batch_decode(outputs.sequences, skip_special_tokens=True)[0].strip()
+    text = processor.batch_decode(outputs.sequences, skip_special_tokens=True)[0].strip() #remove non number readings
 
+    # probabilities
     token_probs = []
     for step_scores, token_id in zip(outputs.scores, outputs.sequences[0, 1:]):
         if token_id == processor.tokenizer.pad_token_id:
@@ -180,19 +176,16 @@ def _isolate_red_ink(bgr_crop: np.ndarray) -> np.ndarray:
     (255 = red ink) the same height/width as `bgr_crop`."""
     hsv = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2HSV)
     mask = (
-        cv2.inRange(hsv, (0, 70, 50), (10, 255, 255))
-        | cv2.inRange(hsv, (170, 70, 50), (180, 255, 255))
+        cv2.inRange(hsv, (0, 70, 50), (10, 255, 255)) | cv2.inRange(hsv, (170, 70, 50), (180, 255, 255)) # range of red ink, picked at two extremes
     )
     return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
 
-_MIN_DIGIT_AREA = 40  # px^2 — drop specks/noise from the red mask
+_MIN_DIGIT_AREA = 40  #
 
 
 def _find_digit_components(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
-    """Connected-component labelling on the raw (undilated) red mask — each
-    surviving component is one candidate digit stroke. No merging happens
-    here; that's `_cluster_digits`'s job."""
+    """labelling on the raw (undilated) red mask — each surviving component is one candidate digit stroke. No merging happens here; that's `_cluster_digits`'s job."""
     num_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
     boxes = []
     for i in range(1, num_labels):  # label 0 is the background
@@ -206,16 +199,15 @@ def _find_digit_components(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
 def _cluster_digits(
     components: list[tuple[int, int, int, int]],
 ) -> list[list[tuple[int, int, int, int]]]:
-    """Group digit-stroke components into numbers by proximity, capped at 2
-    digits (the examiner writes at most a two-digit mark). The merge
-    threshold scales with the components' own size on this page rather than
-    a fixed pixel constant, so a cluster that would grow past 2 components
-    is split back into a 2-component group plus a new cluster starting at
-    the next box, rather than silently read as a longer number."""
-    if not components:
+    """Group digit-stroke components into numbers by proximity, capped at 2 digits (called a blob). The merge threshold scales with the components' own size on this page rather than a fixed pixel constant.
+
+    when more than two numbers are clustered together, the algorithm corrects itself by only keeping the first two digits as outlined and starting a new 'blob' from the next number
+
+    """
+    if not components: # if no numbers
         return []
 
-    ordered = sorted(components, key=lambda c: c[0])
+    ordered = sorted(components, key=lambda c: c[0]) # sorts left to right
     widths = [w for (_x, _y, w, _h) in ordered]
     median_w = sorted(widths)[len(widths) // 2]
     gap_threshold = max(1, int(0.5 * median_w))
@@ -234,8 +226,7 @@ def _cluster_digits(
 
 
 def _mask_to_ocr_image(mask: np.ndarray) -> np.ndarray:
-    """Red ink -> black, everything else -> white — the black-on-white
-    convention `_ocr_trocr` already expects."""
+    """Red ink to black, everything else to white"""
     out = np.full(mask.shape, 255, dtype=np.uint8)
     out[mask > 0] = 0
     return out
@@ -244,20 +235,19 @@ def _mask_to_ocr_image(mask: np.ndarray) -> np.ndarray:
 def _extract_candidates_from_region(
     page_bgr: np.ndarray, region: tuple[int, int, int, int]
 ) -> list[dict]:
-    """Isolate red ink inside `region`, cluster it into candidate numbers
-    (1-2 digits each), OCR each digit individually, and return
+    """Isolate red ink inside `region`
+    cluster it into candidate numbers (1-2 digits each)
+    OCR each digit individually
+    return
     [{"value": int, "confidence": float, "box": (x,y,w,h), "mask_crop": ndarray}, ...]
-    for every cluster that reduces to at least one digit. "box" is in
-    absolute page-pixel coordinates (offset by `region`'s origin) and
-    "mask_crop" is the ink-mask image used for OCR — both consumed by
-    extract_handwritten_mark_debug; extract_handwritten_mark ignores them."""
+    for every cluster that reduces to at least one digit."""
     rx, ry, rw, rh = region
     crop = page_bgr[ry:ry + rh, rx:rx + rw]
     mask = _isolate_red_ink(crop)
     clusters = _cluster_digits(_find_digit_components(mask))
 
     candidates = []
-    pad = 6
+    pad = 6 # margin for OCR reading around box
     for cluster in clusters:
         ordered = sorted(cluster, key=lambda c: c[0])  # left-to-right
         digits, confidences = [], []
@@ -265,7 +255,7 @@ def _extract_candidates_from_region(
             y0, y1 = max(0, y - pad), min(crop.shape[0], y + h + pad)
             x0, x1 = max(0, x - pad), min(crop.shape[1], x + w + pad)
             text, confidence = _ocr_trocr(_mask_to_ocr_image(mask[y0:y1, x0:x1]))
-            digit_text = re.sub(r"\D", "", text)
+            digit_text = re.sub(r"\D", "", text) # remove non-numbers
             if not digit_text:
                 continue
             digits.append(digit_text[0])
@@ -287,7 +277,7 @@ def _extract_candidates_from_region(
         })
     return candidates
 
-
+""" unused as we need the mark crops for reference in debug method below"""
 def extract_handwritten_mark(
     page_bgr: np.ndarray, regions: list[tuple[int, int, int, int]]
 ) -> dict:
