@@ -5,8 +5,8 @@
 > require the returned `X-CSRF-Token`. See
 > [`../docs/authentication.md`](../docs/authentication.md#manual-api-debugging).
 
-This covers the MySQL-backed session/booklet storage added on top of the
-existing scan pipeline: how the two tables fit together, how to run MySQL
+This covers the MySQL-backed session/booklet storage. 
+how the tables fit together, how to run MySQL
 locally via Docker, and how to inspect the data yourself.
 
 ## How it works
@@ -54,10 +54,6 @@ for that session:
   it shows up in the review queue (`unmatched_booklets`). No roster row is
   auto-created.
 
-Re-importing the CSV is safe: rows are upserted by `(session_id, username)`,
-names/roles are refreshed and `expected` re-set to `1`, but `scanned` state
-is untouched. Any already-scanned booklets that weren't matched before are
-re-checked against the new roster.
 
 Before scanning starts, the operator confirms who's actually sitting the exam
 via `PUT /sessions/{session_code}/students/expected` (repeatable `excluded`
@@ -67,12 +63,12 @@ excluded ones `expected = 0` — a deselected student is no longer chased as
 
 Status per roster row is *derived*, never stored:
 
-| `expected` | `scanned` | meaning                                          |
-|-----------:|----------:|-------------------------------------------------|
-| 1          | 0         | `missing` — expected to sit, not yet scanned    |
-| 1          | 1         | `scanned` — accounted for                       |
-| 0          | 1         | `unexpected` — scanned, not expected            |
-| 0          | 0         | `excluded` — deselected, not being chased       |
+| `expected` | `scanned` | meaning                                      |
+|-----------:|----------:|----------------------------------------------|
+| 1          | 0         | `missing` - expected to sit, not yet scanned |
+| 1          | 1         | `scanned` - accounted for                    |
+| 0          | 1         | `unexpected` - scanned, not expected         |
+| 0          | 0         | `excluded` - deselected, not being chased    |
 
 ## Schema
 
@@ -124,11 +120,7 @@ circular table-creation dependency. `init_db()` also runs a one-off
 this column existed.
 
 Why `VARCHAR` and not fixed-width `CHAR`: OCR output isn't guaranteed to
-match a fixed length or format — a misread can produce a `"?"` in place of
-an unreadable digit, or an `"[OCR error: ...]"` string. Fixed-width columns
-would silently truncate or reject exactly the malformed data this system
-needs to keep for review, so `emplid`/`course_code_scanned` stay generous
-and nullable-friendly.
+match a fixed length or format, this keeps the DB from rejecting an unexpected value which has not yet been confirmed by a human.
 
 Tables are created automatically on app startup (`db.init_db()` in
 `scanner_api.py`) via `CREATE TABLE IF NOT EXISTS` — there's no separate
@@ -140,8 +132,9 @@ migration step to run.
 
 ```bash
 cd software
-cp .env.example .env      # edit if you want different credentials
+cp .env.example .env      # edit for different credentials
 ```
+
 
 **Start Docker Desktop** (or your Docker daemon) if it isn't already
 running, then:
