@@ -38,6 +38,15 @@ The backend also expects the Pi hardware API to be reachable at whatever URL
 `RUNS_API_BASE_URL`/`constants.py` point to. If no physical rig is available,
 `scripts/fake_pi_server.py` can stand in for it during local development.
 
+
+## Simple Workflow overview
+1. Operator logs in to `final-ui` (staff authentication, session cookies, CSRF).
+2. Operator creates a new scan session, optionally uploading a class-list CSV.
+3. Operator triggers a Pi scan run for the session, or collects runs already stored on the Pi hardware server.
+4. Each run is processed in the background: page-boundary detection, perspective transform, CLAHE enhancement, OCR of cover fields, handwritten-mark extraction, and PDF generation.
+5. Operator reviews the roster and any unmatched booklets, editing OCR'd fields if needed.
+6. Operator finalises the session, locking in the expected roster and marking it complete. A ZIP of all completed booklets can then be downloaded.
+
 ## Module map
 
 | File | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
