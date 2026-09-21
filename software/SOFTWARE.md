@@ -104,16 +104,20 @@ scripts — kept for now but not part of the live operator flow:
 
 
 ## GenAI declaration
-Claude Sonnet 4.5 was used to assist in the creation of the documentation of this software directory. It was used to list all the files and the usage they provide in the Markdown format.
-For scanner_api.py
+Claude Sonnet 4.5 was used to assist in the creation of the documentation of this software directory. It was used to list all the files and the usage they provide in the Markdown format. It was also used to add comments to functions and classes in all files.
 
-For routes.py 
-
-For auth.py
+For routes.py  
+Claude sonnet 4.5 was used to assist in the development of the routes and the CORS configuration. It was not used to decide which endpoints were needed or to implement the logic of the endpoints. The endpoints were designed and implemented by Devak Mistry.
 
 For detection.py
+Claude sonnet 4.5 was used to assist in the understanding of cv2 and debugging errors. Implementation and design of the detection algorithms were done by Devak Mistry. The choice of colour detection was inspired through converstaion with the supervisor and corner detection was chosen as it is a common approach to document detection. The choice of algorithm was developed through discussion with Gemini as I prompted it with the issues of my first choice(which was just removing the background blue colour) and it suggested to implement the multiple approach of LAB and HSV colour spaces. 
 
-for processing.py
+For processing.py
+Claude sonnet 4.5 was used to implement the initial OCR reading using EasyOCR and tesseract. TrOCR was implemeted and chosen by Devak Mistry after searching Hugging Face for a handwritting usecase model. The choices and use of prediction branches, tuning and ranges were done by Devak Mistry. Claude Sonnet 4.5 was used to make the clustering algorithm but tuning was done by Devak Mistry. 
 
-for constants.py
+For constants.py
+Claude sonnet 4.5 was used to add comments
+
+
+
 

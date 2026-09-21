@@ -181,7 +181,8 @@ def _isolate_red_ink(bgr_crop: np.ndarray) -> np.ndarray:
     return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
 
-_MIN_DIGIT_AREA = 40  #
+_MIN_DIGIT_AREA = 40  #padding around box
+
 
 
 def _find_digit_components(mask: np.ndarray) -> list[tuple[int, int, int, int]]:

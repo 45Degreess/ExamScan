@@ -135,8 +135,8 @@ def detect_by_colour(image: np.ndarray) -> np.ndarray:
     best_area = 0
 
     for mask in [mask_both, mask_l, mask_s]:
-        cleaned = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=4)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN,  kernel, iterations=2)
+        cleaned = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=4) #fill small holes
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN,  kernel, iterations=2) #remove small specks
 
         contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_SIMPLE)
