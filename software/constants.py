@@ -12,7 +12,7 @@ A4_HEIGHT = 3508   # 297 mm at 300 DPI
 
 # overlay onto raw Pi captures (before detect_document) to
 # hide rig hardware visible at the frame edges. Cover pages (QR code found)
-# use v8; booklet-spread pages (no QR code) use v7.
+# use v8; booklet-spread pages v9.
 RIG_OVERLAY_COVER_PATH = os.path.join(os.path.dirname(__file__), "assets", "rig_overlay_v8.png")
 RIG_OVERLAY_SPREAD_PATH = os.path.join(os.path.dirname(__file__), "assets", "rig_spread_overlay_v9.png")
 
