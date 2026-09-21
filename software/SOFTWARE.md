@@ -118,6 +118,9 @@ Claude sonnet 4.5 was used to implement the initial OCR reading using EasyOCR an
 For constants.py
 Claude sonnet 4.5 was used to add comments
 
+For docker-compose.yml
+Claude Sonnet 4.5 was used to create the initial docker-compose.yml to host the backend mySQL database during development. 
+
 
 
 
