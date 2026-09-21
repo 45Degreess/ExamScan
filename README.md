@@ -1,4 +1,4 @@
-# ExamScan
+# ExamScan - Developed By Chidiebere Umah & Devak Mistry
 
 ExamScan combines a Raspberry Pi document-scanner rig with a separate OCR/application backend and operator frontend. The Pi captures examination pages, advances the booklet, and exposes its camera and workflow through a REST API.
 
