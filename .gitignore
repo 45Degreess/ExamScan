@@ -23,7 +23,7 @@ software/storage/
 # Batch-eval script inputs/outputs (real exam-script images)
 software/scripts/Batch_1/
 software/scripts/Batch_2/
-software/batch_eval_results/
+software/scripts/batch_eval_results/
 
 # Local MySQL credentials (copy from software/.env.example)
 software/.env
