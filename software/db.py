@@ -1,7 +1,7 @@
 """
 MySQL access layer for scan sessions and booklets.
 
-Config is read from env vars (DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME),
+Config read from env vars (DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME),
 loaded from a `.env` file if present. Schema is created with a plain
 CREATE TABLE IF NOT EXISTS on startup (see init_db())
 """

@@ -292,5 +292,5 @@ find software/storage -type f
   database).
 
 ## AI Decleration for database
-The Database schema was designed by Devak Mistry, Design choices were made to describe the booklets and the sessions aswell as how to resolve dupelicates and missing students/scripts. Claude Sonnet 3.5 and Claude Code was used to assist with the implemntation of the MySql framework and to setup the docker application for hosting. 
+The Database schema was designed by Devak Mistry, Design choices were made to describe the booklets and the sessions aswell as how to resolve dupelicates and missing students/scripts. Claude Sonnet 3.5 and Claude Code was used to assist with the implemntation of the MySql framework and to setup the docker application for hosting. Claude sonnet was used to add comments
 
