@@ -50,44 +50,45 @@ served by `hardware/scanner-service` is unchanged and must remain on its private
 For the full user flow, API contracts, schema, security decisions, deployment,
 and recovery procedures, see [Staff authentication](docs/authentication.md).
 
-### Development setup: laptop UI and backend, Pi hardware
+### Development setup: application host and Pi hardware
 
 The recommended development layout keeps only camera and mechanical control on
-the Raspberry Pi. A seperate device runs `final-ui`, FastAPI, MySQL, and
-Mailpit. In this layout the browser talks to the laptop, and FastAPI proxies
-hardware operations to the Pi's private API.
+the Raspberry Pi. A separate development host runs `final-ui`, FastAPI, MySQL,
+and Mailpit. The development host can be any supported desktop, server, or
+virtual machine. In this layout the browser talks to that host, and FastAPI
+proxies hardware operations to the Pi's private API.
 
 #### 1. Install prerequisites
 
 Install and start:
 
-- Docker Desktop using Linux containers. Wait for **Engine running** before
-  using `docker compose`.
+- Docker Engine or another Docker implementation that supports
+  `docker compose`;
 - a current Node.js LTS release, including npm;
 - `uv` for the Python environment.
 
-Open a new PowerShell window after installing Node.js, then verify:
+From a terminal, verify that each command is available:
 
-```powershell
+```console
 docker info
 node --version
-npm.cmd --version
+npm --version
 uv --version
 ```
 
-The laptop needs the complete ExamScan repository, not just `final-ui`, because
-the Python project metadata and lockfile live at the repository root. Changes
-that have not been committed and pushed cannot be obtained with `git pull`;
-copy them from the Pi or commit and push them before cloning.
+The development host needs the complete ExamScan repository, not just
+`final-ui`, because the Python project metadata and lockfile live at the
+repository root. Changes that have not been committed and pushed cannot be
+obtained with `git pull`; transfer them from the system where they were made or
+commit and push them before cloning elsewhere.
 
-#### 2. Configure the laptop services
+#### 2. Configure the application services
 
-From PowerShell in the laptop repository:
+From the repository root on the development host:
 
-```powershell
-cd C:\Users\<you>\Documents\ExamScan\software
-Copy-Item .env.example .env
-notepad .env
+```console
+cd software
+# Copy .env.example to .env, then open .env in your preferred editor.
 ```
 
 Set local values similar to these, replacing the bootstrap identity and both
@@ -127,30 +128,31 @@ MySQL passwords. Keep `.env` private; it is excluded from Git.
 
 In a terminal connected to the Pi:
 
-```bash
-ssh Pi
-cd /home/chidi/Desktop/ExamScan/hardware/scanner-service
+```console
+ssh <pi-user>@<pi-host>
+cd <repository-path>/hardware/scanner-service
 sudo systemctl start pigpiod
 uv run examscan
 ```
 
-Keep that process running. From the laptop, verify the private hardware API:
+Keep that process running. From the development host, verify the private
+hardware API, replacing the hostname if mDNS is unavailable:
 
-```powershell
-Invoke-RestMethod http://10.42.0.1:8000/api/health
+```console
+curl http://examscan.local:8000/api/health
 ```
 
 `software/constants.py` currently points `RUNS_API_BASE_URL` at
 `http://10.42.0.1:8000`. If the Pi is reached through mDNS instead of that
 private address, change it to `http://examscan.local:8000` before starting the
-laptop backend.
+application backend.
 
-#### 4. Start MySQL and Mailpit on the laptop
+#### 4. Start MySQL and Mailpit
 
-In the first laptop PowerShell window:
+From `software/` in one terminal:
 
-```powershell
-cd C:\Users\<you>\Documents\ExamScan\software
+```console
+cd software
 docker compose up -d
 docker compose ps
 ```
@@ -158,26 +160,26 @@ docker compose ps
 Wait for MySQL and Mailpit to be running. On the first start Docker downloads
 their images and creates the database named by `DB_NAME`.
 
-#### 5. Start FastAPI on the laptop
+#### 5. Start FastAPI
 
-In a second PowerShell window:
+From `software/` in a second terminal:
 
-```powershell
-cd C:\Users\<you>\Documents\ExamScan\software
+```console
+cd software
 uv run uvicorn scanner_api:app --host 0.0.0.0 --port 8000
 ```
 
 FastAPI creates the scan and authentication tables automatically. Confirm it
-is available with `Invoke-RestMethod http://localhost:8000/health`.
+is available with `curl http://localhost:8000/health`.
 
-#### 6. Start the frontend on the laptop
+#### 6. Start the frontend
 
-In a third PowerShell window:
+From `final-ui/` in a third terminal:
 
-```powershell
-cd C:\Users\<you>\Documents\ExamScan\final-ui
-npm.cmd ci
-npm.cmd run dev
+```console
+cd final-ui
+npm ci
+npm run dev
 ```
 
 Open `http://localhost:5173/login`. The existing Vite configuration proxies
@@ -194,16 +196,16 @@ this layout.
 The bootstrap account is inserted only when the `users` table is empty. Later
 changes to the three bootstrap environment variables do not alter that account.
 
-To stop the laptop services without deleting data, stop FastAPI and Vite with
-Ctrl+C, then run `docker compose down` from `software/`. Do not add `-v` unless
-you intentionally want to delete the local database volume.
+To stop the application services without deleting data, stop FastAPI and Vite
+with Ctrl+C, then run `docker compose down` from `software/`. Do not add `-v`
+unless you intentionally want to delete the local database volume.
 
 Common startup failures:
 
-- `dockerDesktopLinuxEngine` pipe missing: open Docker Desktop and wait for
-  **Engine running**.
-- `npm` or `npm.cmd` not recognized: install Node.js LTS and open a new
-  PowerShell window.
+- Docker connection failure: start the installed Docker service or application
+  and wait until `docker info` succeeds.
+- `npm` not found: install Node.js LTS and ensure its executable directory is
+  available on `PATH`, then open a new terminal.
 - MySQL authentication error after editing `.env`: the existing Docker volume
   still has its original credentials. Restore them, or intentionally reset the
   development volume with `docker compose down -v` before starting again.
@@ -224,8 +226,4 @@ credentials from the reference Capstone project into ExamScan.
 ## Acknowledgements
 
 The ExamScan authentication flow is adapted from Johan Bontes’s Capstone
-project-selection application: https://github.com/JBontes/capstone
-
-This is an acknowledgement of the authentication design and code influence;
-it does not attribute the ExamScan project to Johan Bontes or assert a license
-for the referenced project.
+project-selection application.
