@@ -215,7 +215,4 @@ token files are secrets and must not be committed.
 ## Acknowledgement
 
 The ExamScan authentication flow is adapted from Johan Bontes’s Capstone
-project-selection application: https://github.com/JBontes/capstone
-
-This acknowledges the design and code influence only. It does not attribute
-ExamScan itself to Johan Bontes and does not make a licensing claim.
+project-selection application
