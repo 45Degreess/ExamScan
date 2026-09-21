@@ -9,6 +9,7 @@ wheels/
 # Virtual environments and model caches
 .venv
 .model_cache/
+/.idea
 
 motor copy.py
 hardware/find_focus.py
