@@ -11,6 +11,33 @@ identity fields and an extracted handwritten mark, tracked per scan session in
 MySQL. `final-ui` (the operator-facing React app) is its primary client; the
 Pi hardware server is a secondary service it talks to over HTTP.
 
+## Starting the application
+
+For prerequisites, `.env` setup, starting the Pi hardware API, and
+troubleshooting, see the root [`README.md`](../README.md#development-setup-application-host-and-pi-hardware).
+With `software/.env` already configured, the quick-start commands are:
+
+```console
+# 1. MySQL + Mailpit
+cd software
+docker compose up -d
+
+# 2. Backend (second terminal)
+cd software
+uv run uvicorn scanner_api:app --reload --port 8000
+
+# 3. Frontend (third terminal)
+cd final-ui
+npm ci
+npm run dev
+```
+
+Then open `http://localhost:5173/login`.
+
+The backend also expects the Pi hardware API to be reachable at whatever URL
+`RUNS_API_BASE_URL`/`constants.py` point to. If no physical rig is available,
+`scripts/fake_pi_server.py` can stand in for it during local development.
+
 ## Module map
 
 | File | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
