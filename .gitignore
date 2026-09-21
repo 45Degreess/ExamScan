@@ -13,12 +13,32 @@ wheels/
 motor copy.py
 hardware/find_focus.py
 
+# Local hardware and image-quality test utilities
+/hardware/test_dc_motor.py
+/hardware/check_sharpness.py
+/tests/test_sharpness_checker.py
+
+# Agent worktrees and session state
+.claude/
+.codex/
+/CLAUDE.md
+/AGENTS.md
+/graphify-out/
+
 # Scanner runtime output and calibration scratch
 runs/
+captures/
 focus_tests/
 test-results/
+*.log
 software/demo_output/
 software/storage/
+
+# Local security verification tooling and generated reports
+/scripts/run_security_tests.sh
+/scripts/security_report.py
+/software/tests/test_security_controls.py
+/test-results/security/
 
 # Batch-eval script inputs/outputs (real exam-script images)
 software/scripts/Batch_1/
@@ -32,6 +52,7 @@ software/.env
 software/.cookies.txt
 software/.csrf_token
 
-
+# Local backups taken before editing
+*.bak
 
 

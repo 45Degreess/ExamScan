@@ -1,0 +1,47 @@
+[project]
+name = "examscan-scanner"
+version = "0.1.0"
+description = "Raspberry Pi camera, vision, and page-turn control service for ExamScan"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.10",
+    "pillow>=10.4",
+    "ai-edge-litert>=1.0.1; sys_platform == 'linux'",
+]
+
+[project.optional-dependencies]
+pi = [
+    "gpiozero>=2.0.1; sys_platform == 'linux'",
+    "pigpio>=1.78; sys_platform == 'linux'",
+    "picamera2>=0.3.36; sys_platform == 'linux'",
+    "rpi-lgpio>=0.6; sys_platform == 'linux'",
+    "rpimotorlib>=4.0.0; sys_platform == 'linux'",
+]
+
+[project.scripts]
+examscan = "examscan_scanner.main:main"
+examscan-dev = "examscan_scanner.devserver:main"
+examscan-rig = "examscan_scanner.rigserver:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/examscan_scanner"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "tomli-w>=1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[[tool.uv.dependency-metadata]]
+name = "python-prctl"
+version = "1.8.1"
+requires-dist = []
