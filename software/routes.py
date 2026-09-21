@@ -41,7 +41,8 @@ from constants import (
     MCQ_COVER_FIELDS,
     MARK_FIELDS,
     RUNS_API_BASE_URL,
-    RIG_OVERLAY_PATH,
+    RIG_OVERLAY_COVER_PATH,
+    RIG_OVERLAY_SPREAD_PATH,
 )
 from detection import detect_document
 from processing import (
@@ -207,11 +208,12 @@ def _process_exam_folder(
     filename), writing scanned pages + student_info.txt + combined.pdf into
     `output_dir`.
 
-    apply_rig_overlay_flag: when True, composite RIG_OVERLAY_PATH onto each
-    raw image before detection, hiding rig hardware visible at the frame
-    edges so it doesn't distort the background colour that detect_by_colour
-    relies on. Intended only for images known to come from this rig's Pi
-    camera (see call sites).
+    apply_rig_overlay_flag: when True, composite the rig overlay (cover or
+    spread variant, chosen per image by QR detection) onto each raw image
+    before detection, hiding rig hardware visible at the frame edges so it
+    doesn't distort the background colour that detect_by_colour relies on.
+    Intended only for images known to come from this rig's Pi camera (see
+    call sites).
     """
     image_files = sorted(
         f for f in input_dir.iterdir()
@@ -221,8 +223,6 @@ def _process_exam_folder(
         raise HTTPException(status_code=400, detail="No images found in folder.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    overlay_bgra = load_rig_overlay(RIG_OVERLAY_PATH) if apply_rig_overlay_flag else None
 
     student_info: dict | None = None
     cover_confidences: dict | None = None
@@ -239,10 +239,12 @@ def _process_exam_folder(
         if image is None:
             print(f"[{index}/{total}] {img_path.name}: skipped (unreadable)")
             continue
-        if overlay_bgra is not None:
-            image = apply_rig_overlay(image, overlay_bgra)
 
         qr_found, _qr_data = detect_qr_code(image)
+
+        if apply_rig_overlay_flag:
+            overlay_path = RIG_OVERLAY_COVER_PATH if qr_found else RIG_OVERLAY_SPREAD_PATH
+            image = apply_rig_overlay(image, load_rig_overlay(overlay_path))
 
         if qr_found:
             print(f"[{index}/{total}] {img_path.name}: cover page detected, scanning...")
@@ -427,7 +429,9 @@ async def detect_preview(
     """Returns the original image with detected corners highlighted."""
     image = await _decode_upload(file)
     if apply_rig_overlay_flag:
-        image = apply_rig_overlay(image, load_rig_overlay(RIG_OVERLAY_PATH))
+        qr_found, _ = detect_qr_code(image)
+        overlay_path = RIG_OVERLAY_COVER_PATH if qr_found else RIG_OVERLAY_SPREAD_PATH
+        image = apply_rig_overlay(image, load_rig_overlay(overlay_path))
 
     corners = detect_document(image, method)
     preview = image.copy()
@@ -548,7 +552,7 @@ async def extract_cover(
     """
     image = await _decode_upload(file)
     if apply_rig_overlay_flag:
-        image = apply_rig_overlay(image, load_rig_overlay(RIG_OVERLAY_PATH))
+        image = apply_rig_overlay(image, load_rig_overlay(RIG_OVERLAY_COVER_PATH))
 
     corners = detect_document(image, method)
     warped = four_point_transform(image, corners.reshape(4, 2))
@@ -604,7 +608,7 @@ async def extract_mark(
     """
     image = await _decode_upload(file)
     if apply_rig_overlay_flag:
-        image = apply_rig_overlay(image, load_rig_overlay(RIG_OVERLAY_PATH))
+        image = apply_rig_overlay(image, load_rig_overlay(RIG_OVERLAY_COVER_PATH))
 
     corners = detect_document(image, method)
     warped = four_point_transform(image, corners.reshape(4, 2))
@@ -667,17 +671,18 @@ async def extract_booklet(
             cover_result = None
             mark_result = None
             cover_found = False
-            overlay_bgra = load_rig_overlay(RIG_OVERLAY_PATH) if apply_rig_overlay_flag else None
 
             for img_path in image_files:
                 image = cv2.imread(str(img_path))
                 if image is None:
                     images_log.append({"filename": img_path.name, "qr_found": None, "error": "Unreadable image."})
                     continue
-                if overlay_bgra is not None:
-                    image = apply_rig_overlay(image, overlay_bgra)
 
                 qr_found, _ = detect_qr_code(image)
+                if apply_rig_overlay_flag:
+                    overlay_path = RIG_OVERLAY_COVER_PATH if qr_found else RIG_OVERLAY_SPREAD_PATH
+                    image = apply_rig_overlay(image, load_rig_overlay(overlay_path))
+
                 entry = {"filename": img_path.name, "qr_found": qr_found, "error": None}
 
                 if qr_found:
@@ -721,7 +726,7 @@ async def extract_booklet(
     if image is None:
         raise HTTPException(status_code=400, detail="Invalid image file.")
     if apply_rig_overlay_flag:
-        image = apply_rig_overlay(image, load_rig_overlay(RIG_OVERLAY_PATH))
+        image = apply_rig_overlay(image, load_rig_overlay(RIG_OVERLAY_COVER_PATH))
 
     try:
         corners = detect_document(image, method)
