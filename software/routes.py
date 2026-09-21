@@ -62,6 +62,9 @@ from processing import (
 router = APIRouter()
 
 
+# ── Shared helpers ──────────────────────────────────────────────
+
+
 async def _decode_upload(file: UploadFile) -> np.ndarray:
     contents = await file.read()
     np_arr = np.frombuffer(contents, np.uint8)
@@ -375,9 +378,15 @@ def _identity_confidence(confidences: dict | None) -> float | None:
     return min(vals) if vals else None
 
 
+# ── Health ──────────────────────────────────────────────────────
+
+
 @router.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── Scan / debug pipeline (legacy + debug tools) ────────────────
 
 
 @router.post("/scan")
@@ -434,6 +443,7 @@ async def detect_preview(
         io.BytesIO(buffer.tobytes()),
         media_type="image/jpeg",
     )
+
 
 @router.post("/split-booklet")
 async def split_booklet(
@@ -844,6 +854,31 @@ async def demo_exam_folder(
     return Response(status_code=204)
 
 
+@router.get("/samples")
+async def list_samples():
+    """Return sorted list of sample image filenames."""
+    if not SAMPLE_DIR.exists():
+        return JSONResponse({"files": []})
+    files = sorted(
+        f.name for f in SAMPLE_DIR.iterdir()
+        if f.is_file() and f.suffix.lower() in _IMAGE_EXTS
+    )
+    return JSONResponse({"files": files})
+
+
+@router.get("/samples/{filename}")
+async def get_sample(filename: str):
+    """Serve a single sample image by filename."""
+    safe = Path(filename).name
+    file_path = SAMPLE_DIR / safe
+    if not file_path.exists() or file_path.suffix.lower() not in _IMAGE_EXTS:
+        raise HTTPException(status_code=404, detail="Sample not found")
+    return FileResponse(file_path)
+
+
+# ── Runs proxy (remote runs API) ────────────────────────────────
+
+
 DEMO_RUNS_FILE = Path(__file__).parent / "demo_runs.json"
 
 
@@ -900,6 +935,9 @@ async def download_run_archive(run_id: str):
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=run_{run_id}.zip"},
     )
+
+
+# ── Pi hardware relay ───────────────────────────────────────────
 
 
 @router.get("/pi/health")
@@ -1015,26 +1053,7 @@ async def pi_debug_run():
     })
 
 
-@router.get("/samples")
-async def list_samples():
-    """Return sorted list of sample image filenames."""
-    if not SAMPLE_DIR.exists():
-        return JSONResponse({"files": []})
-    files = sorted(
-        f.name for f in SAMPLE_DIR.iterdir()
-        if f.is_file() and f.suffix.lower() in _IMAGE_EXTS
-    )
-    return JSONResponse({"files": files})
-
-
-@router.get("/samples/{filename}")
-async def get_sample(filename: str):
-    """Serve a single sample image by filename."""
-    safe = Path(filename).name
-    file_path = SAMPLE_DIR / safe
-    if not file_path.exists() or file_path.suffix.lower() not in _IMAGE_EXTS:
-        raise HTTPException(status_code=404, detail="Sample not found")
-    return FileResponse(file_path)
+# ── Sessions ────────────────────────────────────────────────────
 
 
 @router.post("/sessions")
@@ -1218,6 +1237,180 @@ async def session_review(session_code: str):
     })
 
 
+@router.post("/sessions/{session_code}/finalize")
+async def finalize_session(
+    session_code: str,
+    excluded: list[str] = Form(default=[]),
+):
+    """
+    Confirm a session's results: apply the final `expected` flags (everyone
+    expected, then the `excluded` usernames not) and mark the session
+    finalized. Advisory only — nothing is locked — and idempotent.
+
+    Best-effort clears the Pi's stored runs (DELETE {RUNS_API_BASE_URL}/api/runs)
+    afterwards so scan data doesn't linger on the hardware. Cleanup failures
+    (unreachable Pi, hardware busy, etc.) are logged but never fail the
+    request — the session is finalized in the DB regardless.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    summary = await run_in_threadpool(db.finalize_session, session["id"], excluded)
+
+    runs_cleared = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.delete(f"{RUNS_API_BASE_URL}/api/runs")
+        if resp.status_code == 200:
+            runs_cleared = resp.json().get("deleted")
+        else:
+            logger.warning(
+                "Pi run cleanup failed for session '%s' (status %s): %s",
+                session_code, resp.status_code, resp.text,
+            )
+    except httpx.HTTPError as e:
+        logger.warning(
+            "Could not reach runs API to clear runs for session '%s': %s", session_code, e
+        )
+
+    return JSONResponse({"session_code": session_code, "runs_cleared": runs_cleared, **summary})
+
+
+@router.delete("/sessions/{session_code}")
+async def delete_session(session_code: str):
+    """
+    Permanently remove a session: DB rows (booklets, roster, session) and its
+    on-disk storage folder. Any signed-in operator may delete, matching
+    delete_booklet's convention.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    try:
+        await run_in_threadpool(db.delete_session, session_code)
+    except db.SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Unknown session.")
+
+    shutil.rmtree(STORAGE_ROOT / session_code, ignore_errors=True)
+
+    return JSONResponse({"session_code": session_code, "deleted": True})
+
+
+# ── Booklets ────────────────────────────────────────────────────
+
+
+@router.post("/sessions/{session_code}/booklets")
+async def add_booklet(
+    session_code: str,
+    folder_path: str = Form(...),
+    method: str = Form(default="colour"),
+    enhance: bool = Form(default=True),
+):
+    """
+    Process one booklet's images (via _process_exam_folder) against an
+    existing scan session, compare the OCR'd course code against the
+    session's declared course code, and persist the PDF + metadata to MySQL.
+
+    Course-code mismatches are stored and flagged (course_code_verified =
+    False), never rejected. A repeat Emplid within the same session, or a
+    booklet whose PDF content (checksum) matches one already recorded for
+    the session, is rejected (409) rather than overwritten.
+    """
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    input_dir = Path(folder_path)
+    if not input_dir.is_dir():
+        raise HTTPException(status_code=400, detail="folder_path is not a valid directory.")
+
+    staging_output = Path(tempfile.mkdtemp(prefix="examscan_booklet_"))
+    try:
+        result = _process_exam_folder(input_dir, staging_output, method, enhance)
+
+        student_info = result["student_info"]
+        emplid = student_info.get("Emplid", "")
+        confidence = result.get("confidence")
+        if not _emplid_is_usable(emplid):
+            emplid = _placeholder_emplid()
+            confidence = 0.0
+        scanned_course = student_info.get("Course Code", "")
+        verified = scanned_course.strip().upper() == session["course_code"].strip().upper()
+        checksum = hashlib.sha256(
+            (staging_output / result["pdf_filename"]).read_bytes()
+        ).hexdigest()
+
+        final_dir = STORAGE_ROOT / session_code / (emplid or "unknown")
+
+        candidate_values = result.get("mark_candidate_values", [])
+        candidate_crops = result.get("mark_candidate_crops", [])
+        mark, mark_needs_review = _resolve_mark(candidate_values, session.get("test_total"))
+
+        booklet = await run_in_threadpool(
+            functools.partial(
+                db.insert_booklet,
+                session["id"],
+                emplid,
+                scanned_course,
+                verified,
+                result["num_pages"],
+                str(final_dir / "combined.pdf"),
+                confidence,
+                checksum,
+                mark=mark,
+                mark_confidence=result.get("mark_confidence"),
+                mark_candidates=candidate_values,
+                mark_needs_review=mark_needs_review,
+                emplid_crop=result.get("emplid_crop"),
+                course_code_crop=result.get("course_code_crop"),
+                mark_crop_1=candidate_crops[0] if len(candidate_crops) > 0 else None,
+                mark_crop_2=candidate_crops[1] if len(candidate_crops) > 1 else None,
+            )
+        )
+        booklet_id = booklet["booklet_id"]
+
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        final_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging_output), str(final_dir))
+    except db.DuplicateEmplidError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Emplid '{emplid}' already recorded for session '{session_code}'.",
+        )
+    except db.DuplicateChecksumError:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This booklet's contents match a booklet already recorded "
+                f"for session '{session_code}'."
+            ),
+        )
+    finally:
+        shutil.rmtree(staging_output, ignore_errors=True)  # no-op once already moved
+
+    return JSONResponse({
+        "booklet_id": booklet_id,
+        "verified": verified,
+        "matched_student_id": booklet["student_id"],
+        "on_class_list": booklet["student_id"] is not None,
+        "student_info": student_info,
+    })
+
+
+@router.get("/sessions/{session_code}/booklets")
+async def list_session_booklets(session_code: str):
+    """Every booklet for a session (any status), for the View Session table."""
+    session = await run_in_threadpool(db.get_session, session_code)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
+
+    booklets = await run_in_threadpool(db.list_booklets_for_session, session["id"])
+    return JSONResponse({"session_code": session_code, "booklets": booklets})
+
+
 @router.get("/sessions/{session_code}/booklets/{booklet_id}/pdf")
 async def get_booklet_pdf(session_code: str, booklet_id: int):
     """Stream a booklet's combined PDF inline (opens in a browser tab)."""
@@ -1342,27 +1535,6 @@ async def delete_booklet(session_code: str, booklet_id: int):
     return JSONResponse({"session_code": session_code, "deleted": True, "booklet_id": booklet_id})
 
 
-@router.delete("/sessions/{session_code}")
-async def delete_session(session_code: str):
-    """
-    Permanently remove a session: DB rows (booklets, roster, session) and its
-    on-disk storage folder. Any signed-in operator may delete, matching
-    delete_booklet's convention.
-    """
-    session = await run_in_threadpool(db.get_session, session_code)
-    if session is None:
-        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
-
-    try:
-        await run_in_threadpool(db.delete_session, session_code)
-    except db.SessionNotFoundError:
-        raise HTTPException(status_code=404, detail="Unknown session.")
-
-    shutil.rmtree(STORAGE_ROOT / session_code, ignore_errors=True)
-
-    return JSONResponse({"session_code": session_code, "deleted": True})
-
-
 def _build_session_zip(booklets: list[dict]) -> tuple[int, bytes]:
     """ZIP every existing booklet PDF, named `<emplid or id>.pdf` (emplid is
     unique per session; the regex just tames OCR-mangled values). Returns
@@ -1453,145 +1625,6 @@ async def download_confirmed_marks_csv(session_code: str):
     )
 
 
-@router.post("/sessions/{session_code}/finalize")
-async def finalize_session(
-    session_code: str,
-    excluded: list[str] = Form(default=[]),
-):
-    """
-    Confirm a session's results: apply the final `expected` flags (everyone
-    expected, then the `excluded` usernames not) and mark the session
-    finalized. Advisory only — nothing is locked — and idempotent.
-
-    Best-effort clears the Pi's stored runs (DELETE {RUNS_API_BASE_URL}/api/runs)
-    afterwards so scan data doesn't linger on the hardware. Cleanup failures
-    (unreachable Pi, hardware busy, etc.) are logged but never fail the
-    request — the session is finalized in the DB regardless.
-    """
-    session = await run_in_threadpool(db.get_session, session_code)
-    if session is None:
-        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
-
-    summary = await run_in_threadpool(db.finalize_session, session["id"], excluded)
-
-    runs_cleared = None
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.delete(f"{RUNS_API_BASE_URL}/api/runs")
-        if resp.status_code == 200:
-            runs_cleared = resp.json().get("deleted")
-        else:
-            logger.warning(
-                "Pi run cleanup failed for session '%s' (status %s): %s",
-                session_code, resp.status_code, resp.text,
-            )
-    except httpx.HTTPError as e:
-        logger.warning(
-            "Could not reach runs API to clear runs for session '%s': %s", session_code, e
-        )
-
-    return JSONResponse({"session_code": session_code, "runs_cleared": runs_cleared, **summary})
-
-
-@router.post("/sessions/{session_code}/booklets")
-async def add_booklet(
-    session_code: str,
-    folder_path: str = Form(...),
-    method: str = Form(default="colour"),
-    enhance: bool = Form(default=True),
-):
-    """
-    Process one booklet's images (via _process_exam_folder) against an
-    existing scan session, compare the OCR'd course code against the
-    session's declared course code, and persist the PDF + metadata to MySQL.
-
-    Course-code mismatches are stored and flagged (course_code_verified =
-    False), never rejected. A repeat Emplid within the same session, or a
-    booklet whose PDF content (checksum) matches one already recorded for
-    the session, is rejected (409) rather than overwritten.
-    """
-    session = await run_in_threadpool(db.get_session, session_code)
-    if session is None:
-        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
-
-    input_dir = Path(folder_path)
-    if not input_dir.is_dir():
-        raise HTTPException(status_code=400, detail="folder_path is not a valid directory.")
-
-    staging_output = Path(tempfile.mkdtemp(prefix="examscan_booklet_"))
-    try:
-        result = _process_exam_folder(input_dir, staging_output, method, enhance)
-
-        student_info = result["student_info"]
-        emplid = student_info.get("Emplid", "")
-        confidence = result.get("confidence")
-        if not _emplid_is_usable(emplid):
-            emplid = _placeholder_emplid()
-            confidence = 0.0
-        scanned_course = student_info.get("Course Code", "")
-        verified = scanned_course.strip().upper() == session["course_code"].strip().upper()
-        checksum = hashlib.sha256(
-            (staging_output / result["pdf_filename"]).read_bytes()
-        ).hexdigest()
-
-        final_dir = STORAGE_ROOT / session_code / (emplid or "unknown")
-
-        candidate_values = result.get("mark_candidate_values", [])
-        candidate_crops = result.get("mark_candidate_crops", [])
-        mark, mark_needs_review = _resolve_mark(candidate_values, session.get("test_total"))
-
-        booklet = await run_in_threadpool(
-            functools.partial(
-                db.insert_booklet,
-                session["id"],
-                emplid,
-                scanned_course,
-                verified,
-                result["num_pages"],
-                str(final_dir / "combined.pdf"),
-                confidence,
-                checksum,
-                mark=mark,
-                mark_confidence=result.get("mark_confidence"),
-                mark_candidates=candidate_values,
-                mark_needs_review=mark_needs_review,
-                emplid_crop=result.get("emplid_crop"),
-                course_code_crop=result.get("course_code_crop"),
-                mark_crop_1=candidate_crops[0] if len(candidate_crops) > 0 else None,
-                mark_crop_2=candidate_crops[1] if len(candidate_crops) > 1 else None,
-            )
-        )
-        booklet_id = booklet["booklet_id"]
-
-        if final_dir.exists():
-            shutil.rmtree(final_dir)
-        final_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(staging_output), str(final_dir))
-    except db.DuplicateEmplidError:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Emplid '{emplid}' already recorded for session '{session_code}'.",
-        )
-    except db.DuplicateChecksumError:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"This booklet's contents match a booklet already recorded "
-                f"for session '{session_code}'."
-            ),
-        )
-    finally:
-        shutil.rmtree(staging_output, ignore_errors=True)  # no-op once already moved
-
-    return JSONResponse({
-        "booklet_id": booklet_id,
-        "verified": verified,
-        "matched_student_id": booklet["student_id"],
-        "on_class_list": booklet["student_id"] is not None,
-        "student_info": student_info,
-    })
-
-
 # ── Automatic run collection from the Pi ─────────────────────────────────────
 
 
@@ -1630,8 +1663,7 @@ async def _process_collected_run(session: dict, booklet_id: int, run_id: str) ->
                 zf.extractall(input_dir)
 
             # build_archive namespaces every page under a "{run_id}/" folder,
-            # but _process_exam_folder only scans one level deep — descend into
-            # the single nested dir when that's the shape.
+            #descend into the single nested dir when that's the shape.
             children = list(input_dir.iterdir())
             subdirs = [p for p in children if p.is_dir()]
             has_top_level_images = any(
@@ -1813,14 +1845,3 @@ async def capture_run(
         "page_count": manifest.get("page_count"),
         "status": "processing",
     })
-
-
-@router.get("/sessions/{session_code}/booklets")
-async def list_session_booklets(session_code: str):
-    """Every booklet for a session (any status), for the View Session table."""
-    session = await run_in_threadpool(db.get_session, session_code)
-    if session is None:
-        raise HTTPException(status_code=404, detail=f"Unknown session_code '{session_code}'.")
-
-    booklets = await run_in_threadpool(db.list_booklets_for_session, session["id"])
-    return JSONResponse({"session_code": session_code, "booklets": booklets})
