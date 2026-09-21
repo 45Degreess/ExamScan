@@ -12,7 +12,7 @@ A4_HEIGHT = 3508   # 297 mm at 300 DPI
 
 # overlay onto raw Pi captures (before detect_document) to
 # hide rig hardware visible at the frame edges.
-RIG_OVERLAY_PATH = os.path.join(os.path.dirname(__file__), "assets", "rig_overlay_v7.png")
+RIG_OVERLAY_PATH = os.path.join(os.path.dirname(__file__), "assets", "rig_overlay_v8.png")
 
 A3_WIDTH  = A4_WIDTH * 2   # 4960 px
 A3_HEIGHT = A4_HEIGHT      # 3508 px
